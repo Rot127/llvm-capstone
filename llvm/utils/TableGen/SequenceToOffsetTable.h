@@ -15,6 +15,7 @@
 #ifndef LLVM_UTILS_TABLEGEN_SEQUENCETOOFFSETTABLE_H
 #define LLVM_UTILS_TABLEGEN_SEQUENCETOOFFSETTABLE_H
 
+#include "PrinterTypes.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -110,13 +111,17 @@ class SequenceToOffsetTable {
   // Entries in the final table, or 0 before layout was called.
   unsigned Entries;
 
+  // The output language of the table.
+  PrinterLanguage PL;
+
   // isSuffix - Returns true if A is a suffix of B.
   static bool isSuffix(const SeqT &A, const SeqT &B) {
     return A.size() <= B.size() && std::equal(A.rbegin(), A.rend(), B.rbegin());
   }
 
 public:
-  SequenceToOffsetTable() : Entries(0) {}
+  SequenceToOffsetTable() : Entries(0), PL(PRINTER_LANG_CPP) {}
+  SequenceToOffsetTable(PrinterLanguage PL) : Entries(0), PL(PL) {}
 
   /// add - Add a sequence to the table.
   /// This must be called before layout().
@@ -164,11 +169,31 @@ public:
     return I->second + (I->first.size() - Seq.size());
   }
 
+  void emitStringLiteralDef(raw_ostream &OS, const llvm::Twine &Decl) const {
+    switch (PL) {
+    default:
+      llvm_unreachable("Language not specified to print table in.");
+    case PRINTER_LANG_CPP:
+      emitStringLiteralDefCPP(OS, Decl);
+    }
+  }
+
+  void emit(raw_ostream &OS,
+            void (*Print)(raw_ostream&, ElemT),
+            const char *Term = "0") const {
+    switch (PL) {
+    default:
+      llvm_unreachable("Language not specified to print table in.");
+    case PRINTER_LANG_CPP:
+      emitCPP(OS, Print, Term);
+    }
+  }
+
   /// `emitStringLiteralDef` - Print out the table as the body of an array
   /// initializer, where each element is a C string literal terminated by
   /// `\0`. Falls back to emitting a comma-separated integer list if
   /// `EmitLongStrLiterals` is false
-  void emitStringLiteralDef(raw_ostream &OS, const llvm::Twine &Decl) const {
+  void emitStringLiteralDefCPP(raw_ostream &OS, const llvm::Twine &Decl) const {
     assert(Entries && "Call layout() before emitStringLiteralDef()");
     if (!EmitLongStrLiterals) {
       OS << Decl << " = {\n";
@@ -197,9 +222,9 @@ public:
 
   /// emit - Print out the table as the body of an array initializer.
   /// Use the Print function to print elements.
-  void emit(raw_ostream &OS,
+  void emitCPP(raw_ostream &OS,
             void (*Print)(raw_ostream&, ElemT),
-            const char *Term = "0") const {
+            const char *Term) const {
     assert((empty() || Entries) && "Call layout() before emit()");
     for (typename SeqMap::const_iterator I = Seqs.begin(), E = Seqs.end();
          I != E; ++I) {
