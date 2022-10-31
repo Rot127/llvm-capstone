@@ -11,6 +11,7 @@
 
 #include "CodeGenRegisters.h"
 #include "CodeGenTarget.h"
+#include "DecoderEmitterTypes.h"
 #include "PrinterTypes.h"
 #include "RegisterInfoEmitterTypes.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -59,10 +60,24 @@ class PrinterLLVM {
 private:
   formatted_raw_ostream &OS;
 
+  //-------------------------
+  // Backend: DecoderEmitter
+  //-------------------------
+  std::string TargetName;
+  std::string PredicateNamespace;
+  std::string GuardPrefix, GuardPostfix;
+  std::string ReturnOK, ReturnFail;
+  std::string Locals;
+
 public:
   PrinterLLVM(formatted_raw_ostream &OS);
 
   virtual ~PrinterLLVM();
+
+  // Backend: DecoderEmitter
+  PrinterLLVM(formatted_raw_ostream &OS, std::string PredicateNamespace,
+              std::string GPrefix, std::string GPostfix, std::string ROK,
+              std::string RFail, std::string L, std::string Target);
 
   static PrinterLanguage getLanguage();
 
@@ -77,11 +92,6 @@ public:
       OS << "\n";
   }
   virtual void emitString(std::string const &Str) const { OS << Str; }
-
-  //--------------------------
-  // General printing methods
-  //--------------------------
-
   virtual void emitNamespace(std::string const &Name, bool Begin,
                              std::string const &Comment = "") const;
   virtual void emitIncludeToggle(std::string const &Name, bool Begin) const;
@@ -269,6 +279,46 @@ public:
       std::string const &ClassName,
       SmallVector<const CodeGenRegisterClass *> const BaseClasses,
       std::vector<uint8_t> const Mapping) const;
+
+  //-------------------------
+  // Backend: DecoderEmitter
+  //-------------------------
+
+  // FilterChooser printing
+
+  virtual void decoderEmitterEmitOpDecoder(raw_ostream &DecoderOS,
+                                           const OperandInfo &Op) const;
+  virtual void
+  decoderEmitterEmitOpBinaryParser(raw_ostream &DecoderOS,
+                                   const OperandInfo &OpInfo) const;
+  virtual bool
+  decoderEmitterEmitPredicateMatchAux(const Init &Val, bool ParenIfBinOp,
+                                      raw_ostream &PredOS) const;
+  // Emits code to check the Predicates member of an instruction are true.
+  // Returns true if predicate matches were emitted, false otherwise.
+  virtual bool decoderEmitterEmitPredicateMatch(raw_ostream &PredOS,
+                                                const ListInit *Predicates,
+                                                unsigned Opc) const;
+
+  // DecoderEmitter printing
+
+  virtual void decoderEmitterEmitFieldFromInstruction() const;
+  virtual void decoderEmitterEmitInsertBits() const;
+  virtual void decoderEmitterEmitDecodeInstruction(bool IsVarLenInst) const;
+  // Emit the decoder state machine table.
+  virtual void decoderEmitterEmitTable(
+      DecoderTable &Table, unsigned BitWidth, StringRef Namespace,
+      std::vector<EncodingAndInst> &NumberedEncodings) const;
+  virtual void
+  decoderEmitterEmitInstrLenTable(std::vector<unsigned> &InstrLen) const;
+  virtual void
+  decoderEmitterEmitPredicateFunction(PredicateSet &Predicates,
+                                      unsigned Indentation) const;
+  virtual void
+  decoderEmitterEmitDecoderFunction(DecoderSet &Decoders,
+                                    unsigned Indentation) const;
+  virtual void decoderEmitterEmitIncludes() const;
+  virtual void decoderEmitterEmitSourceFileHeader() const;
 };
 
 //==============================
