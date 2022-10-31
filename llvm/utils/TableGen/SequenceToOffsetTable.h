@@ -175,6 +175,10 @@ public:
       llvm_unreachable("Language not specified to print table in.");
     case PRINTER_LANG_CPP:
       emitStringLiteralDefCPP(OS, Decl);
+      break;
+    case PRINTER_LANG_CAPSTONE_C:
+      emitStringLiteralDefCCS(OS, Decl);
+      break;
     }
   }
 
@@ -186,6 +190,10 @@ public:
       llvm_unreachable("Language not specified to print table in.");
     case PRINTER_LANG_CPP:
       emitCPP(OS, Print, Term);
+      break;
+    case PRINTER_LANG_CAPSTONE_C:
+      emitCCS(OS, Print, Term);
+      break;
     }
   }
 
@@ -220,9 +228,45 @@ public:
        << "#endif\n\n";
   }
 
+  void emitStringLiteralDefCCS(raw_ostream &OS, const llvm::Twine &Decl) const {
+    assert(Entries && "Call layout() before emitStringLiteralDef()");
+    if (!EmitLongStrLiterals) {
+      OS << Decl << " = {\n";
+      emit(OS, printChar, "0");
+      OS << "  0\n};\n\n";
+      return;
+    }
+
+    OS << Decl << " = {\n";
+    for (auto I : Seqs) {
+      OS << "  /* " << I.second << " */ \"";
+      for (auto C : I.first) {
+        printStrLitEscChar(OS, C);
+      }
+      OS << "\\0\"\n";
+    }
+    OS << "};\n";
+  }
+
   /// emit - Print out the table as the body of an array initializer.
   /// Use the Print function to print elements.
   void emitCPP(raw_ostream &OS,
+            void (*Print)(raw_ostream&, ElemT),
+            const char *Term) const {
+    assert((empty() || Entries) && "Call layout() before emit()");
+    for (typename SeqMap::const_iterator I = Seqs.begin(), E = Seqs.end();
+         I != E; ++I) {
+      OS << "  /* " << I->second << " */ ";
+      for (typename SeqT::const_iterator SI = I->first.begin(),
+             SE = I->first.end(); SI != SE; ++SI) {
+        Print(OS, *SI);
+        OS << ", ";
+      }
+      OS << Term << ",\n";
+    }
+  }
+
+  void emitCCS(raw_ostream &OS,
             void (*Print)(raw_ostream&, ElemT),
             const char *Term) const {
     assert((empty() || Entries) && "Call layout() before emit()");

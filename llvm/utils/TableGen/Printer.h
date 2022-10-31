@@ -30,6 +30,8 @@ public:
 void printBitVectorAsHex(raw_ostream &OS, const BitVector &Bits,
                          unsigned Width);
 
+class PrinterCapstone;
+
 //==============================
 //
 // Implementation: LLVM
@@ -52,6 +54,7 @@ void printBitVectorAsHex(raw_ostream &OS, const BitVector &Bits,
 ///
 /// Output language: C++
 class PrinterLLVM {
+  friend PrinterCapstone;
 
 private:
   formatted_raw_ostream &OS;
@@ -268,6 +271,207 @@ public:
       std::vector<uint8_t> const Mapping) const;
 };
 
-#endif // LLVM_UTILS_TABLEGEN_PRINTER_H
+//==============================
+//
+// Implementation: Capstone
+//
+//==============================
+
+/// Printer implementation of Capstone.
+///
+/// Output language: C
+class PrinterCapstone : public PrinterLLVM {
+public:
+  using PrinterLLVM::PrinterLLVM;
+  virtual void flushOS() const override { OS.flush(); }
+
+  //--------------------------
+  // General printing methods
+  //--------------------------
+
+  void emitNamespace(std::string const &Name, bool Begin,
+                     std::string const &Comment) const override;
+  void emitIncludeToggle(std::string const &Name, bool Begin) const override;
+
+  //------------------------
+  // Backend: RegisterInfo
+  //------------------------
+
+  void regInfoEmitSourceFileHeader(std::string const &Desc) const override;
+  void regInfoEmitEnums(CodeGenTarget const &Target,
+                        CodeGenRegBank const &Bank) const override;
+  void regInfoEmitRegDiffLists(
+      std::string const TargetName,
+      SequenceToOffsetTable<DiffVec> const &DiffSeqs) const override;
+  void regInfoEmitLaneMaskLists(
+      std::string const TargetName,
+      SequenceToOffsetTable<MaskVec> const &DiffSeqs) const override;
+  void regInfoEmitSubRegIdxLists(
+      std::string const TargetName,
+      SequenceToOffsetTable<SubRegIdxVec, deref<std::less<>>> const
+          &SubRegIdxSeqs) const override;
+  void regInfoEmitSubRegIdxSizes(
+      std::string const TargetName,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void regInfoEmitSubRegStrTable(
+      std::string const TargetName,
+      SequenceToOffsetTable<std::string> const &RegStrings) const override;
+  void regInfoEmitRegDesc(
+      SequenceToOffsetTable<MaskVec> const &LaneMaskSeqs,
+      std::deque<CodeGenRegister> const &Regs,
+      SequenceToOffsetTable<SubRegIdxVec, deref<std::less<>>> const
+          &SubRegIdxSeqs,
+      SequenceToOffsetTable<DiffVec> const &DiffSeqs,
+      SmallVector<SubRegIdxVec, 4> const &SubRegIdxLists,
+      SmallVector<DiffVec, 4> const &SubRegLists,
+      SmallVector<DiffVec, 4> const &SuperRegLists,
+      SmallVector<DiffVec, 4> const &RegUnitLists,
+      SmallVector<unsigned, 4> const &RegUnitInitScale,
+      SmallVector<MaskVec, 4> const &RegUnitLaneMasks,
+      SequenceToOffsetTable<std::string> const &RegStrings) const override;
+  void regInfoEmitRegUnitRoots(std::string const TargetName,
+                               CodeGenRegBank const &RegBank) const override;
+  void
+  regInfoEmitRegClasses(std::list<CodeGenRegisterClass> const &RegClasses,
+                        SequenceToOffsetTable<std::string> &RegClassStrings,
+                        CodeGenTarget const &Target) const override;
+  void regInfoEmitStrLiteralRegClasses(
+      std::string const TargetName,
+      SequenceToOffsetTable<std::string> const &RegClassStrings) const override;
+  void regInfoEmitMCRegClassesTable(
+      std::string const TargetName,
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      SequenceToOffsetTable<std::string> &RegClassStrings) const override;
+  void regInfoEmitRegEncodingTable(
+      std::string const TargetName,
+      std::deque<CodeGenRegister> const &Regs) const override;
+  void regInfoEmitMCRegInfoInit(
+      std::string const TargetName, CodeGenRegBank const &RegBank,
+      std::deque<CodeGenRegister> const &Regs,
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void regInfoEmitInfoDwarfRegs(StringRef const &Namespace,
+                                DwarfRegNumsVecTy &DwarfRegNums,
+                                unsigned MaxLength, bool IsCtor) const override;
+  void regInfoEmitInfoDwarfRegsRev(StringRef const &Namespace,
+                                   DwarfRegNumsVecTy &DwarfRegNums,
+                                   unsigned MaxLength,
+                                   bool IsCtor) const override;
+  void regInfoEmitInfoRegMapping(StringRef const &Namespace, unsigned MaxLength,
+                                 bool IsCtor) const override;
+  void regInfoEmitHeaderIncludes() const override;
+  void regInfoEmitHeaderExternRegClasses(
+      std::list<CodeGenRegisterClass> const &RegClasses) const override;
+  void regInfoEmitHeaderDecl(std::string const &TargetName,
+                             std::string const &ClassName,
+                             bool SubRegsPresent,
+                             bool DeclareGetPhysRegBaseClass) const override;
+  void
+  regInfoEmitExternRegClassesArr(std::string const &TargetName) const override;
+  void regInfoEmitVTSeqs(
+      SequenceToOffsetTable<std::vector<MVT::SimpleValueType>> const &VTSeqs)
+      const override;
+  void regInfoEmitSubRegIdxTable(
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void regInfoEmitRegClassInfoTable(
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      SequenceToOffsetTable<std::vector<MVT::SimpleValueType>> const &VTSeqs,
+      CodeGenHwModes const &CGH, unsigned NumModes) const override;
+  void regInfoEmitSubClassMaskTable(
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      SmallVector<IdxList, 8> &SuperRegIdxLists,
+      SequenceToOffsetTable<IdxList, deref<std::less<>>> &SuperRegIdxSeqs,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices,
+      BitVector &MaskBV) const override;
+  void regInfoEmitSuperRegIdxSeqsTable(
+      SequenceToOffsetTable<IdxList, deref<std::less<>>> const &SuperRegIdxSeqs)
+      const override;
+  void regInfoEmitSuperClassesTable(
+      std::list<CodeGenRegisterClass> const &RegClasses) const override;
+  void
+  regInfoEmitRegClassMethods(std::list<CodeGenRegisterClass> const &RegClasses,
+                             std::string const &TargetName) const override;
+  void regInfomitRegClassInstances(
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      SequenceToOffsetTable<IdxList, deref<std::less<>>> const &SuperRegIdxSeqs,
+      SmallVector<IdxList, 8> const &SuperRegIdxLists,
+      std::string const &TargetName) const override;
+  void regInfoEmitRegClassTable(
+      std::list<CodeGenRegisterClass> const &RegClasses) const override;
+  void regInfoEmitCostPerUseTable(std::vector<unsigned> const &AllRegCostPerUse,
+                                  unsigned NumRegCosts) const override;
+  void regInfoEmitInAllocatableClassTable(
+      llvm::BitVector const &InAllocClass) const override;
+  void regInfoEmitRegExtraDesc(std::string const &TargetName,
+                               unsigned NumRegCosts) const override;
+  void regInfoEmitSubClassSubRegGetter(
+      std::string const &ClassName, unsigned SubRegIndicesSize,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices,
+      std::list<CodeGenRegisterClass> const &RegClasses,
+      CodeGenRegBank &RegBank) const override;
+  void regInfoEmitRegClassWeight(CodeGenRegBank const &RegBank,
+                                 std::string const &ClassName) const override;
+  void regInfoEmitRegUnitWeight(CodeGenRegBank const &RegBank,
+                                std::string const &ClassName,
+                                bool RegUnitsHaveUnitWeight) const override;
+  void regInfoEmitGetNumRegPressureSets(std::string const &ClassName,
+                                        unsigned NumSets) const override;
+  void regInfoEmitGetRegPressureTables(CodeGenRegBank const &RegBank,
+                                       std::string const &ClassName,
+                                       unsigned NumSets) const override;
+  void regInfoEmitRCSetsTable(
+      std::string const &ClassName, unsigned NumRCs,
+      SequenceToOffsetTable<std::vector<int>> const &PSetsSeqs,
+      std::vector<std::vector<int>> const &PSets) const override;
+  void regInfoEmitGetRegUnitPressureSets(
+      SequenceToOffsetTable<std::vector<int>> const &PSetsSeqs,
+      CodeGenRegBank const &RegBank, std::string const &ClassName,
+      std::vector<std::vector<int>> const &PSets) const override;
+  void regInfoEmitExternTableDecl(std::string const &TargetName) const override;
+  void
+  regInfoEmitRegClassInit(std::string const &TargetName,
+                          std::string const &ClassName,
+                          CodeGenRegBank const &RegBank,
+                          std::list<CodeGenRegisterClass> const &RegClasses,
+                          std::deque<CodeGenRegister> const &Regs,
+                          unsigned SubRegIndicesSize) const override;
+  void regInfoEmitSaveListTable(Record const *CSRSet,
+                                SetTheory::RecVec const *Regs) const override;
+  void regInfoEmitRegMaskTable(std::string const &CSRSetName,
+                               BitVector &Covered) const override;
+  void regInfoEmitGetRegMasks(std::vector<Record *> const &CSRSets,
+                              std::string const &ClassName) const override;
+  void regInfoEmitGPRCheck(
+      std::string const &ClassName,
+      std::list<CodeGenRegisterCategory> const &RegCategories) const override;
+  void regInfoEmitFixedRegCheck(
+      std::string const &ClassName,
+      std::list<CodeGenRegisterCategory> const &RegCategories) const override;
+  void regInfoEmitArgRegCheck(
+      std::string const &ClassName,
+      std::list<CodeGenRegisterCategory> const &RegCategories) const override;
+  void regInfoEmitGetRegMaskNames(std::vector<Record *> const &CSRSets,
+                                  std::string const &ClassName) const override;
+  void
+  regInfoEmitGetFrameLowering(std::string const &TargetName) const override;
+  void regInfoEmitComposeSubRegIndicesImplHead(
+      std::string const &ClName) const override;
+  void regInfoEmitComposeSubRegIndicesImplBody(
+      SmallVector<SmallVector<CodeGenSubRegIndex *, 4>, 4> const &Rows,
+      unsigned SubRegIndicesSize,
+      SmallVector<unsigned, 4> const &RowMap) const override;
+  void regInfoEmitLaneMaskComposeSeq(
+      SmallVector<SmallVector<MaskRolPair, 1>, 4> const &Sequences,
+      SmallVector<unsigned, 4> const &SubReg2SequenceIndexMap,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void regInfoEmitComposeSubRegIdxLaneMask(
+      std::string const &ClName,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void regInfoEmitComposeSubRegIdxLaneMaskRev(
+      std::string const &ClName,
+      std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+};
 
 } // end namespace llvm
+
+#endif // LLVM_UTILS_TABLEGEN_PRINTER_H
