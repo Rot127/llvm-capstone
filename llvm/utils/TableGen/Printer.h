@@ -9,6 +9,7 @@
 #ifndef LLVM_UTILS_TABLEGEN_PRINTER_H
 #define LLVM_UTILS_TABLEGEN_PRINTER_H
 
+#include "AsmWriterInst.h"
 #include "CodeGenRegisters.h"
 #include "CodeGenTarget.h"
 #include "DecoderEmitterTypes.h"
@@ -87,6 +88,8 @@ public:
   // General printing methods
   //--------------------------
 
+  virtual void emitIncludeToggle(std::string const &Name, bool Begin,
+                                 bool Newline = true) const;
   virtual void emitNewline(unsigned Count) const {
     for (unsigned I = Count; I > 0; --I)
       OS << "\n";
@@ -94,7 +97,6 @@ public:
   virtual void emitString(std::string const &Str) const { OS << Str; }
   virtual void emitNamespace(std::string const &Name, bool Begin,
                              std::string const &Comment = "") const;
-  virtual void emitIncludeToggle(std::string const &Name, bool Begin) const;
 
   //------------------------
   // Backend: RegisterInfo
@@ -291,9 +293,9 @@ public:
   virtual void
   decoderEmitterEmitOpBinaryParser(raw_ostream &DecoderOS,
                                    const OperandInfo &OpInfo) const;
-  virtual bool
-  decoderEmitterEmitPredicateMatchAux(const Init &Val, bool ParenIfBinOp,
-                                      raw_ostream &PredOS) const;
+  virtual bool decoderEmitterEmitPredicateMatchAux(const Init &Val,
+                                                   bool ParenIfBinOp,
+                                                   raw_ostream &PredOS) const;
   // Emits code to check the Predicates member of an instruction are true.
   // Returns true if predicate matches were emitted, false otherwise.
   virtual bool decoderEmitterEmitPredicateMatch(raw_ostream &PredOS,
@@ -311,14 +313,92 @@ public:
       std::vector<EncodingAndInst> &NumberedEncodings) const;
   virtual void
   decoderEmitterEmitInstrLenTable(std::vector<unsigned> &InstrLen) const;
-  virtual void
-  decoderEmitterEmitPredicateFunction(PredicateSet &Predicates,
-                                      unsigned Indentation) const;
-  virtual void
-  decoderEmitterEmitDecoderFunction(DecoderSet &Decoders,
-                                    unsigned Indentation) const;
+  virtual void decoderEmitterEmitPredicateFunction(PredicateSet &Predicates,
+                                                   unsigned Indentation) const;
+  virtual void decoderEmitterEmitDecoderFunction(DecoderSet &Decoders,
+                                                 unsigned Indentation) const;
   virtual void decoderEmitterEmitIncludes() const;
   virtual void decoderEmitterEmitSourceFileHeader() const;
+
+  //-------------------------
+  // Backend: AsmWriter
+  //-------------------------
+
+  virtual void asmWriterEmitSourceFileHeader() const;
+  virtual void asmWriterEmitGetMnemonic(std::string const &TargetName,
+                                        StringRef const &ClassName) const;
+  virtual void asmWriterEmitAsmStrs(
+      SequenceToOffsetTable<std::string> const &StrTable) const;
+  virtual void asmWriterEmitMnemonicDecodeTable(
+      unsigned const OpcodeInfoBits, unsigned BitsLeft,
+      unsigned const &AsmStrBits,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+      std::vector<uint64_t> const &OpcodeInfo) const;
+  virtual void asmWriterEmitPrintInstruction(
+      std::string const &TargetName,
+      std::vector<std::vector<std::string>> &TableDrivenOperandPrinters,
+      unsigned &BitsLeft, unsigned &AsmStrBits, StringRef const &ClassName,
+      bool PassSubtarget) const;
+  virtual void asmWriterEmitOpCases(
+      std::vector<std::pair<std::string, AsmWriterOperand>> &OpsToPrint,
+      bool PassSubtarget) const;
+  virtual void asmWriterEmitInstrSwitch() const;
+  virtual void asmWriterEmitCompoundClosure(unsigned Indent, bool Newline,
+                                            bool Semicolon) const;
+  virtual void
+  asmWriterEmitInstruction(AsmWriterInst const &FirstInst,
+                           std::vector<AsmWriterInst> const &SimilarInsts,
+                           unsigned DifferingOperand, bool PassSubtarget) const;
+  virtual void asmWriterEmitGetRegNameAssert(std::string const &TargetName,
+                                             StringRef const &ClassName,
+                                             bool HasAltNames,
+                                             unsigned RegSize) const;
+  virtual void asmWriterEmitStringLiteralDef(
+      SequenceToOffsetTable<std::string> const &StringTable,
+      StringRef const &AltName) const;
+  virtual void
+  asmWriterEmitAltIdxSwitch(bool HasAltNames,
+                            std::vector<Record *> const &AltNameIndices,
+                            StringRef const &Namespace) const;
+  virtual void asmWriterEmitRegAsmOffsets(
+      unsigned RegSizes, SmallVector<std::string, 4> const &AsmNames,
+      SequenceToOffsetTable<std::string> const &StringTable,
+      StringRef const &AltName) const;
+  virtual char const *asmWriterGetPatCondKIgnore() const;
+  virtual char const *asmWriterGetPatCondKRegClass() const;
+  virtual char const *asmWriterGetPatCondKTiedReg() const;
+  virtual char const *asmWriterGetPatCondKCustom() const;
+  virtual char const *asmWriterGetPatCondKImm() const;
+  virtual char const *asmWriterGetPatCondKNoReg() const;
+  virtual char const *asmWriterGetPatCondKReg() const;
+  virtual char const *asmWriterGetPatCondKFeature() const;
+  virtual char const *asmWriterGetPatCondKEndOrFeature() const;
+  virtual char const *asmWriterGetPatOpcStart() const;
+  virtual char const *asmWriterGetCondPatStart() const;
+  virtual std::string asmWriterGetCond(std::string const &Cond) const;
+  virtual char const *asmWriterGetPatternFormat() const;
+  virtual char const *asmWriterGetOpcodeFormat() const;
+  virtual void asmWriterEmitPrintAliasInstrHeader(std::string const &TargetName,
+                                                  StringRef const &ClassName,
+                                                  bool PassSubtarget) const;
+  virtual void asmWriterEmitPrintAliasInstrBodyRetFalse() const;
+  virtual void asmWriterEmitPrintAliasInstrBody(
+      raw_string_ostream &OpcodeO, raw_string_ostream &PatternO,
+      raw_string_ostream &CondO,
+      std::vector<std::pair<uint32_t, std::string>> const &AsmStrings,
+      std::vector<const Record *> const &MCOpPredicates,
+      std::string const &TargetName, StringRef const &ClassName,
+      bool PassSubtarget) const;
+  virtual void asmWriterEmitDeclValid(std::string const &TargetName,
+                                      StringRef const &ClassName) const;
+  virtual void asmWriterEmitPrintAliasOp(
+      std::string const &TargetName, StringRef const &ClassName,
+      std::vector<std::pair<std::string, bool>> const &PrintMethods,
+      bool PassSubtarget) const;
+  virtual void
+  asmWriterEmitPrintMC(std::string const &TargetName,
+                       StringRef const &ClassName,
+                       std::vector<const Record *> const &MCOpPredicates) const;
 };
 
 //==============================
@@ -341,7 +421,8 @@ public:
 
   void emitNamespace(std::string const &Name, bool Begin,
                      std::string const &Comment) const override;
-  void emitIncludeToggle(std::string const &Name, bool Begin) const override;
+  void emitIncludeToggle(std::string const &Name, bool Begin,
+                         bool Newline = true) const override;
 
   //------------------------
   // Backend: RegisterInfo
@@ -413,8 +494,7 @@ public:
   void regInfoEmitHeaderExternRegClasses(
       std::list<CodeGenRegisterClass> const &RegClasses) const override;
   void regInfoEmitHeaderDecl(std::string const &TargetName,
-                             std::string const &ClassName,
-                             bool SubRegsPresent,
+                             std::string const &ClassName, bool SubRegsPresent,
                              bool DeclareGetPhysRegBaseClass) const override;
   void
   regInfoEmitExternRegClassesArr(std::string const &TargetName) const override;
@@ -549,6 +629,84 @@ public:
                                          unsigned Indentation) const override;
   void decoderEmitterEmitIncludes() const override;
   void decoderEmitterEmitSourceFileHeader() const override;
+
+  //-------------------------
+  // Backend: AsmWriter
+  //-------------------------
+
+  void asmWriterEmitSourceFileHeader() const override;
+  void asmWriterEmitGetMnemonic(std::string const &TargetName,
+                                StringRef const &ClassName) const override;
+  void asmWriterEmitAsmStrs(
+      SequenceToOffsetTable<std::string> const &StrTable) const override;
+  void asmWriterEmitMnemonicDecodeTable(
+      unsigned const OpcodeInfoBits, unsigned BitsLeft,
+      unsigned const &AsmStrBits,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+      std::vector<uint64_t> const &OpcodeInfo) const override;
+  void asmWriterEmitPrintInstruction(
+      std::string const &TargetName,
+      std::vector<std::vector<std::string>> &TableDrivenOperandPrinters,
+      unsigned &BitsLeft, unsigned &AsmStrBits, StringRef const &ClassName,
+      bool PassSubtarget) const override;
+  void asmWriterEmitOpCases(
+      std::vector<std::pair<std::string, AsmWriterOperand>> &OpsToPrint,
+      bool PassSubtarget) const override;
+  void asmWriterEmitInstrSwitch() const override;
+  void asmWriterEmitCompoundClosure(unsigned Indent, bool Newline,
+                                    bool Semicolon) const override;
+  void asmWriterEmitInstruction(AsmWriterInst const &FirstInst,
+                                std::vector<AsmWriterInst> const &SimilarInsts,
+                                unsigned DifferingOperand,
+                                bool PassSubtarget) const override;
+  void asmWriterEmitGetRegNameAssert(std::string const &TargetName,
+                                     StringRef const &ClassName,
+                                     bool HasAltNames, unsigned RegSize) const override;
+  void asmWriterEmitStringLiteralDef(
+      SequenceToOffsetTable<std::string> const &StringTable,
+      StringRef const &AltName) const override;
+  void asmWriterEmitAltIdxSwitch(bool HasAltNames,
+                                 std::vector<Record *> const &AltNameIndices,
+                                 StringRef const &Namespace) const override;
+  void asmWriterEmitRegAsmOffsets(
+      unsigned RegSizes, SmallVector<std::string, 4> const &AsmNames,
+      SequenceToOffsetTable<std::string> const &StringTable,
+      StringRef const &AltName) const override;
+  char const *asmWriterGetPatCondKIgnore() const override;
+  char const *asmWriterGetPatCondKRegClass() const override;
+  char const *asmWriterGetPatCondKTiedReg() const override;
+  char const *asmWriterGetPatCondKCustom() const override;
+  char const *asmWriterGetPatCondKImm() const override;
+  char const *asmWriterGetPatCondKNoReg() const override;
+  char const *asmWriterGetPatCondKReg() const override;
+  char const *asmWriterGetPatCondKFeature() const override;
+  char const *asmWriterGetPatCondKEndOrFeature() const override;
+  char const *asmWriterGetPatOpcStart() const override;
+  char const *asmWriterGetCondPatStart() const override;
+  std::string asmWriterGetCond(std::string const &Cond) const override;
+  char const *asmWriterGetPatternFormat() const override;
+  char const *asmWriterGetOpcodeFormat() const override;
+  void asmWriterEmitPrintAliasInstrHeader(std::string const &TargetName,
+                                          StringRef const &ClassName,
+                                          bool PassSubtarget) const override;
+  void asmWriterEmitPrintAliasInstrBodyRetFalse() const override;
+  void asmWriterEmitPrintAliasInstrBody(
+      raw_string_ostream &OpcodeO, raw_string_ostream &PatternO,
+      raw_string_ostream &CondO,
+      std::vector<std::pair<uint32_t, std::string>> const &AsmStrings,
+      std::vector<const Record *> const &MCOpPredicates,
+      std::string const &TargetName, StringRef const &ClassName,
+      bool PassSubtarget) const override;
+  void asmWriterEmitDeclValid(std::string const &TargetName,
+                              StringRef const &ClassName) const override;
+  void asmWriterEmitPrintAliasOp(
+      std::string const &TargetName, StringRef const &ClassName,
+      std::vector<std::pair<std::string, bool>> const &PrintMethods,
+      bool PassSubtarget) const override;
+  void
+  asmWriterEmitPrintMC(std::string const &TargetName,
+                       StringRef const &ClassName,
+                       std::vector<const Record *> const &MCOpPredicates) const override;
 };
 
 } // end namespace llvm
