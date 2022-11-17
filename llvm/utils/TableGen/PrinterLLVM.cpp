@@ -11,7 +11,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "AsmWriterInst.h"
+#include "CodeGenSchedule.h"
 #include "Printer.h"
+#include "SubtargetEmitterTypes.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/TableGen/TableGenBackend.h"
 
@@ -55,10 +57,9 @@ void PrinterBitVectorEmitter::print(raw_ostream &OS) {
 
 PrinterLLVM::PrinterLLVM(formatted_raw_ostream &OS) : OS(OS) {}
 PrinterLLVM::PrinterLLVM(formatted_raw_ostream &OS,
-                                   std::string PredicateNamespace,
-                                   std::string GPrefix, std::string GPostfix,
-                                   std::string ROK, std::string RFail,
-                                   std::string L, std::string Target)
+                         std::string PredicateNamespace, std::string GPrefix,
+                         std::string GPostfix, std::string ROK,
+                         std::string RFail, std::string L, std::string Target)
     : OS(OS), TargetName(std::move(Target)),
       PredicateNamespace(std::move(PredicateNamespace)),
       GuardPrefix(std::move(GPrefix)), GuardPostfix(std::move(GPostfix)),
@@ -105,11 +106,14 @@ void PrinterLLVM::emitNamespace(std::string const &Name, bool Begin,
 /// `#endif // <Name>`
 /// Used to control inclusion of a code block via a macro definition.
 void PrinterLLVM::emitIncludeToggle(std::string const &Name, bool Begin,
-                                    bool Newline) const {
+                                    bool Newline, bool UndefAtEnd) const {
   if (Begin) {
-    OS << "\n#ifdef " << Name << "\n";
-    OS << "#undef " << Name << "\n\n";
+    OS << "#ifdef " << Name << "\n";
+    if (!UndefAtEnd)
+      OS << "#undef " << Name << "\n\n";
   } else {
+    if (UndefAtEnd)
+      OS << "#undef " << Name << "\n";
     OS << "#endif // " << Name << (Newline ? "\n\n" : "\n");
   }
 }
@@ -2606,6 +2610,1779 @@ void PrinterLLVM::asmWriterEmitPrintMC(
     OS << "  }\n"
        << "}\n\n";
   }
+}
+
+//-------------------------
+// Backend: Subtarget
+//-------------------------
+
+void PrinterLLVM::subtargetEmitSourceFileHeader() const {
+  emitSourceFileHeader("Subtarget Enumeration Source Fragment", OS);
+}
+
+void PrinterLLVM::subtargetEmitFeatureEnum(
+    DenseMap<Record *, unsigned> &FeatureMap,
+    std::vector<Record *> const &DefList, unsigned N) const {
+  // Open enumeration.
+  OS << "enum {\n";
+
+  // For each record
+  for (unsigned I = 0; I < N; ++I) {
+    // Next record
+    Record *Def = DefList[I];
+
+    // Get and emit name
+    OS << "  " << Def->getName() << " = " << I << ",\n";
+
+    // Save the index for this feature.
+    FeatureMap[Def] = I;
+  }
+
+  OS << "  "
+     << "NumSubtargetFeatures = " << N << "\n";
+
+  // Close enumeration and namespace
+  OS << "};\n";
+}
+
+void PrinterLLVM::subtargetEmitGetSTIMacro(StringRef const &Value,
+                                           StringRef const &Attribute) const {
+  // Some features default to true, with values set to false if enabled.
+  const char *Default = Value == "false" ? "true" : "false";
+
+  // Define the getter with lowercased first char: xxxYyy() { return XxxYyy; }
+  const std::string Getter =
+      Attribute.substr(0, 1).lower() + Attribute.substr(1).str();
+
+  OS << "GET_SUBTARGETINFO_MACRO(" << Attribute << ", " << Default << ", "
+     << Getter << ")\n";
+}
+
+void PrinterLLVM::subtargetEmitHwModes(CodeGenHwModes const &CGH,
+                                       std::string const &ClassName) const {
+  OS << "unsigned " << ClassName << "::getHwMode() const {\n";
+  for (unsigned M = 1, NumModes = CGH.getNumModeIds(); M != NumModes; ++M) {
+    const HwMode &HM = CGH.getMode(M);
+    OS << "  if (checkFeatures(\"" << HM.Features << "\")) return " << M
+       << ";\n";
+  }
+  OS << "  return 0;\n}\n";
+}
+
+void PrinterLLVM::subtargetEmitFeatureKVHeader(
+    std::string const &Target) const {
+  // Begin feature table
+  OS << "// Sorted (by key) array of values for CPU features.\n"
+     << "extern const llvm::SubtargetFeatureKV " << Target
+     << "FeatureKV[] = {\n";
+}
+
+void PrinterLLVM::subtargetEmitFeatureKVPartI(std::string const &Target,
+                                              StringRef const &CommandLineName,
+                                              StringRef const &Name,
+                                              StringRef const &Desc) const {
+  // Emit as { "feature", "description", { featureEnum }, { i1 , i2 , ... , in }
+  OS << "  { "
+     << "\"" << CommandLineName << "\", "
+     << "\"" << Desc << "\", " << Target << "::" << Name << ", ";
+}
+
+void PrinterLLVM::subtargetEmitFeatureKVPartII() const { OS << " },\n"; }
+
+void PrinterLLVM::subtargetEmitPrintFeatureMask(
+    std::array<uint64_t, MAX_SUBTARGET_WORDS> const &Mask) const {
+  OS << "{ { { ";
+  for (unsigned I = 0; I != Mask.size(); ++I) {
+    OS << "0x";
+    OS.write_hex(Mask[I]);
+    OS << "ULL, ";
+  }
+  OS << "} } }";
+}
+
+void PrinterLLVM::subtargetEmitFeatureKVEnd() const { OS << "};\n"; }
+
+void PrinterLLVM::subtargetEmitCPUKVHeader(std::string const &Target) const {
+  OS << "// Sorted (by key) array of values for CPU subtype.\n"
+     << "extern const llvm::SubtargetSubTypeKV " << Target
+     << "SubTypeKV[] = {\n";
+}
+
+void PrinterLLVM::subtargetEmitCPUKVEnd() const { OS << "};\n"; }
+
+void PrinterLLVM::subtargetEmitCPUKVPartI(StringRef const &Name) const {
+  // Emit as { "cpu", "description", 0, { f1 , f2 , ... fn } },
+  OS << " { "
+     << "\"" << Name << "\", ";
+}
+
+void PrinterLLVM::subtargetEmitCPUKVPartII() const { OS << ", "; }
+
+void PrinterLLVM::subtargetEmitCPUKVPartIII(
+    std::string const &ProcModelName) const {
+  OS << ", &" << ProcModelName << " },\n";
+}
+
+void PrinterLLVM::subtargetEmitDBGMacrosBegin() const {
+  OS << "#ifdef DBGFIELD\n"
+     << "#error \"<target>GenSubtargetInfo.inc requires a DBGFIELD macro\"\n"
+     << "#endif\n"
+     << "#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)\n"
+     << "#define DBGFIELD(x) x,\n"
+     << "#else\n"
+     << "#define DBGFIELD(x)\n"
+     << "#endif\n";
+}
+
+void PrinterLLVM::subtargetEmitDBGMacrosEnd() const {
+  OS << "\n#undef DBGFIELD\n";
+}
+
+void PrinterLLVM::subtargetEmitFunctionalItinaryUnits(
+    CodeGenSchedModels const &SchedModels) const {
+
+  // Multiple processor models may share an itinerary record. Emit it once.
+  SmallPtrSet<Record *, 8> ItinsDefSet;
+
+  // Emit functional units for all the itineraries.
+  for (const CodeGenProcModel &ProcModel : SchedModels.procModels()) {
+
+    if (!ItinsDefSet.insert(ProcModel.ItinsDef).second)
+      continue;
+
+    RecVec FUs = ProcModel.ItinsDef->getValueAsListOfDefs("FU");
+    if (FUs.empty())
+      continue;
+
+    StringRef const Name = ProcModel.ItinsDef->getName();
+    OS << "\n// Functional units for \"" << Name << "\"\n"
+       << "namespace " << Name << "FU {\n";
+
+    for (unsigned J = 0, FUN = FUs.size(); J < FUN; ++J)
+      OS << "  const InstrStage::FuncUnits " << FUs[J]->getName()
+         << " = 1ULL << " << J << ";\n";
+
+    OS << "} // end namespace " << Name << "FU\n";
+
+    RecVec BPs = ProcModel.ItinsDef->getValueAsListOfDefs("BP");
+    if (!BPs.empty()) {
+      OS << "\n// Pipeline forwarding paths for itineraries \"" << Name
+         << "\"\n"
+         << "namespace " << Name << "Bypass {\n";
+
+      OS << "  const unsigned NoBypass = 0;\n";
+      for (unsigned J = 0, BPN = BPs.size(); J < BPN; ++J)
+        OS << "  const unsigned " << BPs[J]->getName() << " = 1 << " << J
+           << ";\n";
+
+      OS << "} // end namespace " << Name << "Bypass\n";
+    }
+  }
+}
+
+std::string const
+PrinterLLVM::subtargetGetBeginStageTable(std::string const &TargetName) const {
+  return "\nextern const llvm::InstrStage " + TargetName + "Stages[] = {\n" +
+         "  { 0, 0, 0, llvm::InstrStage::Required }, // No itinerary\n";
+}
+
+std::string const PrinterLLVM::subtargetGetBeginOperandCycleTable(
+    std::string const &TargetName) const {
+  return "extern const unsigned " + TargetName + "OperandCycles[] = {\n" +
+         "  0, // No itinerary\n";
+}
+
+std::string const
+PrinterLLVM::subtargetGetBeginBypassTable(std::string const &TargetName) const {
+  return "extern const unsigned " + TargetName + "ForwardingPaths[] = {\n" +
+         " 0, // No itinerary\n";
+}
+
+std::string const PrinterLLVM::subtargetGetEndStageTable() const {
+  return "  { 0, 0, 0, llvm::InstrStage::Required } // End stages\n};\n";
+}
+
+std::string const PrinterLLVM::subtargetGetEndOperandCycleTable() const {
+  return "  0 // End operand cycles\n};\n";
+}
+
+std::string const PrinterLLVM::subtargetGetEndBypassTable() const {
+  return " 0 // End bypass tables\n};\n";
+}
+
+// subtargetFormItineraryStageString - Compose a string containing the stage
+// data initialization for the specified itinerary.  N is the number
+// of stages.
+void PrinterLLVM::subtargetFormItineraryStageString(std::string const &Name,
+                                                    Record *ItinData,
+                                                    std::string &ItinString,
+                                                    unsigned &NStages) const {
+  // Get states list
+  RecVec StageList = ItinData->getValueAsListOfDefs("Stages");
+
+  // For each stage
+  unsigned const N = NStages = StageList.size();
+  for (unsigned I = 0; I < N;) {
+    // Next stage
+    const Record *Stage = StageList[I];
+
+    // Form string as ,{ cycles, u1 | u2 | ... | un, timeinc, kind }
+    int const Cycles = Stage->getValueAsInt("Cycles");
+    ItinString += "  { " + itostr(Cycles) + ", ";
+
+    // Get unit list
+    RecVec UnitList = Stage->getValueAsListOfDefs("Units");
+
+    // For each unit
+    for (unsigned J = 0, M = UnitList.size(); J < M;) {
+      // Add name and bitwise or
+      ItinString += Name + "FU::" + UnitList[J]->getName().str();
+      if (++J < M)
+        ItinString += " | ";
+    }
+
+    int const TimeInc = Stage->getValueAsInt("TimeInc");
+    ItinString += ", " + itostr(TimeInc);
+
+    int const Kind = Stage->getValueAsInt("Kind");
+    ItinString += ", (llvm::InstrStage::ReservationKinds)" + itostr(Kind);
+
+    // Close off stage
+    ItinString += " }";
+    if (++I < N)
+      ItinString += ", ";
+  }
+}
+
+// FormItineraryOperandCycleString - Compose a string containing the
+// operand cycle initialization for the specified itinerary.  N is the
+// number of operands that has cycles specified.
+void PrinterLLVM::subtargetFormItineraryOperandCycleString(
+    Record *ItinData, std::string &ItinString, unsigned &NOperandCycles) const {
+  // Get operand cycle list
+  std::vector<int64_t> OperandCycleList =
+      ItinData->getValueAsListOfInts("OperandCycles");
+
+  // For each operand cycle
+  NOperandCycles = OperandCycleList.size();
+  ListSeparator LS;
+  for (int OCycle : OperandCycleList) {
+    // Next operand cycle
+    ItinString += LS;
+    ItinString += "  " + itostr(OCycle);
+  }
+}
+
+void PrinterLLVM::subtargetFormItineraryBypassString(
+    const std::string &Name, Record *ItinData, std::string &ItinString,
+    unsigned NOperandCycles) const {
+  RecVec BypassList = ItinData->getValueAsListOfDefs("Bypasses");
+  unsigned const N = BypassList.size();
+  unsigned I = 0;
+  ListSeparator LS;
+  for (; I < N; ++I) {
+    ItinString += LS;
+    ItinString += Name + "Bypass::" + BypassList[I]->getName().str();
+  }
+  for (; I < NOperandCycles; ++I) {
+    ItinString += LS;
+    ItinString += " 0";
+  }
+}
+
+std::string
+PrinterLLVM::subtargetGetStageEntryPartI(std::string const &ItinStageString,
+                                         unsigned StageCount) const {
+  return ItinStageString + ", // " + itostr(StageCount);
+}
+std::string PrinterLLVM::subtargetGetStageEntryPartII(unsigned StageCount,
+                                                      unsigned NStages) const {
+  return "-" + itostr(StageCount + NStages - 1);
+}
+std::string PrinterLLVM::subtargetGetStageEntryPartIII() const { return "\n"; }
+
+std::string PrinterLLVM::subtargetGetOperandCycleEntryPartI(
+    std::string const &ItinOperandCycleString) const {
+  return ItinOperandCycleString + ", // ";
+}
+
+std::string PrinterLLVM::subtargetGetOperandCycleEntryPartII(
+    unsigned OperandCycleCount, unsigned NOperandCycles) const {
+  return "-" + itostr(OperandCycleCount + NOperandCycles - 1);
+}
+
+std::string PrinterLLVM::subtargetGetOperandCycleEntryPartIII(
+    std::string const &OperandIdxComment) const {
+  return OperandIdxComment + "\n";
+}
+
+std::string PrinterLLVM::subtargetGetOperandCycleEntryPartIV(
+    std::string const &ItinBypassString,
+    std::string const &OperandIdxComment) const {
+  return ItinBypassString + ", // " + OperandIdxComment + "\n";
+}
+
+void PrinterLLVM::subtargetEmitProcessorItineraryTable(
+    std::string const &ItinsDefName, std::vector<InstrItinerary> &ItinList,
+    CodeGenSchedModels const &SchedModels) const {
+  OS << "\n";
+  OS << "static const llvm::InstrItinerary ";
+
+  // Begin processor itinerary table
+  OS << ItinsDefName << "[] = {\n";
+
+  // For each itinerary class in CodeGenSchedClass::Index order.
+  for (unsigned J = 0, M = ItinList.size(); J < M; ++J) {
+    InstrItinerary const &Intinerary = ItinList[J];
+
+    // Emit Itinerary in the form of
+    // { firstStage, lastStage, firstCycle, lastCycle } // index
+    OS << "  { " << Intinerary.NumMicroOps << ", " << Intinerary.FirstStage
+       << ", " << Intinerary.LastStage << ", " << Intinerary.FirstOperandCycle
+       << ", " << Intinerary.LastOperandCycle << " }"
+       << ", // " << J << " " << SchedModels.getSchedClass(J).Name << "\n";
+  }
+  // End processor itinerary table
+  OS << "  { 0, uint16_t(~0U), uint16_t(~0U), uint16_t(~0U), uint16_t(~0U) }"
+        "// end marker\n";
+  OS << "};\n";
+}
+
+void PrinterLLVM::subtargetEmitPreOperandTableComment() const {
+  OS << "\n// ===============================================================\n"
+     << "// Data tables for the new per-operand machine model.\n";
+}
+
+// Emit SchedClass tables for all processors and associated global tables.
+void PrinterLLVM::subtargetEmitSchedClassTables(
+    SchedClassTablesT &SchedTables, std::string const &TargetName,
+    CodeGenSchedModels const &SchedModels) const {
+  // Emit global WriteProcResTable.
+  OS << "\n// {ProcResourceIdx, Cycles}\n"
+     << "extern const llvm::MCWriteProcResEntry " << TargetName
+     << "WriteProcResTable[] = {\n"
+     << "  { 0,  0}, // Invalid\n";
+  for (unsigned WPRIdx = 1, WPREnd = SchedTables.WriteProcResources.size();
+       WPRIdx != WPREnd; ++WPRIdx) {
+    MCWriteProcResEntry const &WPREntry =
+        SchedTables.WriteProcResources[WPRIdx];
+    OS << "  {" << format("%2d", WPREntry.ProcResourceIdx) << ", "
+       << format("%2d", WPREntry.Cycles) << "}";
+    if (WPRIdx + 1 < WPREnd)
+      OS << ',';
+    OS << " // #" << WPRIdx << '\n';
+  }
+  OS << "}; // " << TargetName << "WriteProcResTable\n";
+
+  // Emit global WriteLatencyTable.
+  OS << "\n// {Cycles, WriteResourceID}\n"
+     << "extern const llvm::MCWriteLatencyEntry " << TargetName
+     << "WriteLatencyTable[] = {\n"
+     << "  { 0,  0}, // Invalid\n";
+  for (unsigned WLIdx = 1, WLEnd = SchedTables.WriteLatencies.size();
+       WLIdx != WLEnd; ++WLIdx) {
+    MCWriteLatencyEntry &WLEntry = SchedTables.WriteLatencies[WLIdx];
+    OS << "  {" << format("%2d", WLEntry.Cycles) << ", "
+       << format("%2d", WLEntry.WriteResourceID) << "}";
+    if (WLIdx + 1 < WLEnd)
+      OS << ',';
+    OS << " // #" << WLIdx << " " << SchedTables.WriterNames[WLIdx] << '\n';
+  }
+  OS << "}; // " << TargetName << "WriteLatencyTable\n";
+
+  // Emit global ReadAdvanceTable.
+  OS << "\n// {UseIdx, WriteResourceID, Cycles}\n"
+     << "extern const llvm::MCReadAdvanceEntry " << TargetName
+     << "ReadAdvanceTable[] = {\n"
+     << "  {0,  0,  0}, // Invalid\n";
+  for (unsigned RAIdx = 1, RAEnd = SchedTables.ReadAdvanceEntries.size();
+       RAIdx != RAEnd; ++RAIdx) {
+    MCReadAdvanceEntry &RAEntry = SchedTables.ReadAdvanceEntries[RAIdx];
+    OS << "  {" << RAEntry.UseIdx << ", "
+       << format("%2d", RAEntry.WriteResourceID) << ", "
+       << format("%2d", RAEntry.Cycles) << "}";
+    if (RAIdx + 1 < RAEnd)
+      OS << ',';
+    OS << " // #" << RAIdx << '\n';
+  }
+  OS << "}; // " << TargetName << "ReadAdvanceTable\n";
+
+  // Emit a SchedClass table for each processor.
+  for (CodeGenSchedModels::ProcIter PI = SchedModels.procModelBegin(),
+                                    PM = SchedModels.procModelEnd();
+       PI != PM; ++PI) {
+    if (!PI->hasInstrSchedModel())
+      continue;
+
+    std::vector<MCSchedClassDesc> &SCTab =
+        SchedTables.ProcSchedClasses[1 + (PI - SchedModels.procModelBegin())];
+
+    OS << "\n// {Name, NumMicroOps, BeginGroup, EndGroup, RetireOOO,"
+       << " WriteProcResIdx,#, WriteLatencyIdx,#, ReadAdvanceIdx,#}\n";
+    OS << "static const llvm::MCSchedClassDesc " << PI->ModelName
+       << "SchedClasses[] = {\n";
+
+    // The first class is always invalid. We no way to distinguish it except by
+    // name and position.
+    assert(SchedModels.getSchedClass(0).Name == "NoInstrModel" &&
+           "invalid class not first");
+    OS << "  {DBGFIELD(\"InvalidSchedClass\")  "
+       << MCSchedClassDesc::InvalidNumMicroOps
+       << ", false, false, false, 0, 0,  0, 0,  0, 0},\n";
+
+    for (unsigned SCIdx = 1, SCEnd = SCTab.size(); SCIdx != SCEnd; ++SCIdx) {
+      MCSchedClassDesc &MCDesc = SCTab[SCIdx];
+      const CodeGenSchedClass &SchedClass = SchedModels.getSchedClass(SCIdx);
+      OS << "  {DBGFIELD(\"" << SchedClass.Name << "\") ";
+      if (SchedClass.Name.size() < 18)
+        OS.indent(18 - SchedClass.Name.size());
+      OS << MCDesc.NumMicroOps << ", " << (MCDesc.BeginGroup ? "true" : "false")
+         << ", " << (MCDesc.EndGroup ? "true" : "false") << ", "
+         << (MCDesc.RetireOOO ? "true" : "false") << ", "
+         << format("%2d", MCDesc.WriteProcResIdx) << ", "
+         << MCDesc.NumWriteProcResEntries << ", "
+         << format("%2d", MCDesc.WriteLatencyIdx) << ", "
+         << MCDesc.NumWriteLatencyEntries << ", "
+         << format("%2d", MCDesc.ReadAdvanceIdx) << ", "
+         << MCDesc.NumReadAdvanceEntries << "}, // #" << SCIdx << '\n';
+    }
+    OS << "}; // " << PI->ModelName << "SchedClasses\n";
+  }
+}
+
+unsigned PrinterLLVM::subtargetEmitRegisterFileTables(
+    CodeGenProcModel const &ProcModel) const {
+  // Print the RegisterCost table first.
+  OS << "\n// {RegisterClassID, Register Cost, AllowMoveElimination }\n";
+  OS << "static const llvm::MCRegisterCostEntry " << ProcModel.ModelName
+     << "RegisterCosts"
+     << "[] = {\n";
+
+  for (const CodeGenRegisterFile &RF : ProcModel.RegisterFiles) {
+    // Skip register files with a default cost table.
+    if (RF.hasDefaultCosts())
+      continue;
+    // Add entries to the cost table.
+    for (const CodeGenRegisterCost &RC : RF.Costs) {
+      OS << "  { ";
+      Record *Rec = RC.RCDef;
+      if (Rec->getValue("Namespace"))
+        OS << Rec->getValueAsString("Namespace") << "::";
+      OS << Rec->getName() << "RegClassID, " << RC.Cost << ", "
+         << RC.AllowMoveElimination << "},\n";
+    }
+  }
+  OS << "};\n";
+
+  // Now generate a table with register file info.
+  OS << "\n // {Name, #PhysRegs, #CostEntries, IndexToCostTbl, "
+     << "MaxMovesEliminatedPerCycle, AllowZeroMoveEliminationOnly }\n";
+  OS << "static const llvm::MCRegisterFileDesc " << ProcModel.ModelName
+     << "RegisterFiles"
+     << "[] = {\n"
+     << "  { \"InvalidRegisterFile\", 0, 0, 0, 0, 0 },\n";
+  unsigned CostTblIndex = 0;
+
+  for (const CodeGenRegisterFile &RD : ProcModel.RegisterFiles) {
+    OS << "  { ";
+    OS << '"' << RD.Name << '"' << ", " << RD.NumPhysRegs << ", ";
+    unsigned NumCostEntries = RD.Costs.size();
+    OS << NumCostEntries << ", " << CostTblIndex << ", "
+       << RD.MaxMovesEliminatedPerCycle << ", "
+       << RD.AllowZeroMoveEliminationOnly << "},\n";
+    CostTblIndex += NumCostEntries;
+  }
+  OS << "};\n";
+
+  return CostTblIndex;
+}
+
+void PrinterLLVM::subtargetEmitMCExtraProcInfoTableHeader(
+    std::string const &ProcModelName) const {
+  OS << "\nstatic const llvm::MCExtraProcessorInfo " << ProcModelName
+     << "ExtraInfo = {\n  ";
+}
+
+void PrinterLLVM::subtargetEmitMCExtraProcInfoTableEnd() const { OS << "};\n"; }
+
+void PrinterLLVM::subtargetEmitReorderBufferSize(
+    int64_t ReorderBufferSize) const {
+  OS << ReorderBufferSize << ", // ReorderBufferSize\n  ";
+}
+
+void PrinterLLVM::subtargetEmitMaxRetirePerCycle(
+    int64_t MaxRetirePerCycle) const {
+  OS << MaxRetirePerCycle << ", // MaxRetirePerCycle\n  ";
+}
+
+void PrinterLLVM::subtargetEmitRegisterFileInfo(
+    CodeGenProcModel const &ProcModel, unsigned NumRegisterFiles,
+    unsigned NumCostEntries) const {
+  if (NumRegisterFiles)
+    OS << ProcModel.ModelName << "RegisterFiles,\n  " << (1 + NumRegisterFiles);
+  else
+    OS << "nullptr,\n  0";
+
+  OS << ", // Number of register files.\n  ";
+  if (NumCostEntries)
+    OS << ProcModel.ModelName << "RegisterCosts,\n  ";
+  else
+    OS << "nullptr,\n  ";
+  OS << NumCostEntries << ", // Number of register cost entries.\n";
+}
+
+void PrinterLLVM::subtargetEmitResourceDescriptorLoadQueue(
+    unsigned QueueID) const {
+  OS << "  " << QueueID << ", // Resource Descriptor for the Load Queue\n";
+}
+
+void PrinterLLVM::subtargetEmitResourceDescriptorStoreQueue(
+    unsigned QueueID) const {
+  OS << "  " << QueueID << ", // Resource Descriptor for the Store Queue\n";
+}
+
+void PrinterLLVM::subtargetEmitProcessorResourceSubUnits(
+    const CodeGenProcModel &ProcModel,
+    CodeGenSchedModels const &SchedModels) const {
+  OS << "\nstatic const unsigned " << ProcModel.ModelName
+     << "ProcResourceSubUnits[] = {\n"
+     << "  0,  // Invalid\n";
+
+  for (unsigned I = 0, E = ProcModel.ProcResourceDefs.size(); I < E; ++I) {
+    Record *PRDef = ProcModel.ProcResourceDefs[I];
+    if (!PRDef->isSubClassOf("ProcResGroup"))
+      continue;
+    RecVec const ResUnits = PRDef->getValueAsListOfDefs("Resources");
+    for (Record *RUDef : ResUnits) {
+      Record *const RU =
+          SchedModels.findProcResUnits(RUDef, ProcModel, PRDef->getLoc());
+      for (unsigned J = 0; J < RU->getValueAsInt("NumUnits"); ++J) {
+        OS << "  " << ProcModel.getProcResourceIdx(RU) << ", ";
+      }
+    }
+    OS << "  // " << PRDef->getName() << "\n";
+  }
+  OS << "};\n";
+}
+
+void PrinterLLVM::subtargetEmitMCProcResourceDescHeader(
+    std::string const &ProcModelName) const {
+  OS << "\n// {Name, NumUnits, SuperIdx, BufferSize, SubUnitsIdxBegin}\n";
+  OS << "static const llvm::MCProcResourceDesc " << ProcModelName
+     << "ProcResources"
+     << "[] = {\n"
+     << "  {\"InvalidUnit\", 0, 0, 0, 0},\n";
+}
+
+void PrinterLLVM::subtargetEmitMCProcResourceDescEnd() const { OS << "};\n"; }
+
+void PrinterLLVM::subtargetEmitMCProcResourceDesc(
+    Record const *PRDef, Record const *SuperDef,
+    std::string const &ProcModelName, unsigned SubUnitsOffset,
+    unsigned SuperIdx, unsigned NumUnits, int BufferSize, unsigned I,
+    unsigned const SubUnitsBeginOffset) const {
+  // Emit the ProcResourceDesc
+  OS << "  {\"" << PRDef->getName() << "\", ";
+  if (PRDef->getName().size() < 15)
+    OS.indent(15 - PRDef->getName().size());
+  OS << NumUnits << ", " << SuperIdx << ", " << BufferSize << ", ";
+  if (SubUnitsBeginOffset != SubUnitsOffset) {
+    OS << ProcModelName << "ProcResourceSubUnits + " << SubUnitsBeginOffset;
+  } else {
+    OS << "nullptr";
+  }
+  OS << "}, // #" << I + 1;
+  if (SuperDef)
+    OS << ", Super=" << SuperDef->getName();
+  OS << "\n";
+}
+
+// Emit either the value defined in the TableGen Record, or the default
+// value defined in the C++ header. The Record is null if the processor does not
+// define a model.
+void PrinterLLVM::subtargetEmitProcessorProp(Record const *R,
+                                             StringRef const Name,
+                                             char Separator) const {
+  OS << "  ";
+  int const V = R ? R->getValueAsInt(Name) : -1;
+  if (V >= 0)
+    OS << V << Separator << " // " << Name;
+  else
+    OS << "MCSchedModel::Default" << Name << Separator;
+  OS << '\n';
+}
+
+void PrinterLLVM::subtargetEmitProcModelHeader(
+    std::string const &ModelName) const {
+  OS << "\n";
+  OS << "static const llvm::MCSchedModel " << ModelName << " = {\n";
+}
+
+void PrinterLLVM::subtargetEmitProcModel(
+    CodeGenProcModel const &PM, CodeGenSchedModels const &SchedModels) const {
+  bool const PostRAScheduler =
+      (PM.ModelDef ? PM.ModelDef->getValueAsBit("PostRAScheduler") : false);
+
+  OS << "  " << (PostRAScheduler ? "true" : "false") << ", // "
+     << "PostRAScheduler\n";
+
+  bool const CompleteModel =
+      (PM.ModelDef ? PM.ModelDef->getValueAsBit("CompleteModel") : false);
+
+  OS << "  " << (CompleteModel ? "true" : "false") << ", // "
+     << "CompleteModel\n";
+
+  OS << "  " << PM.Index << ", // Processor ID\n";
+  if (PM.hasInstrSchedModel())
+    OS << "  " << PM.ModelName << "ProcResources"
+       << ",\n"
+       << "  " << PM.ModelName << "SchedClasses"
+       << ",\n"
+       << "  " << PM.ProcResourceDefs.size() + 1 << ",\n"
+       << "  " << (SchedModels.schedClassEnd() - SchedModels.schedClassBegin())
+       << ",\n";
+  else
+    OS << "  nullptr, nullptr, 0, 0,"
+       << " // No instruction-level machine model.\n";
+  if (PM.hasItineraries())
+    OS << "  " << PM.ItinsDef->getName() << ",\n";
+  else
+    OS << "  nullptr, // No Itinerary\n";
+  if (PM.hasExtraProcessorInfo())
+    OS << "  &" << PM.ModelName << "ExtraInfo,\n";
+  else
+    OS << "  nullptr // No extra processor descriptor\n";
+  OS << "};\n";
+}
+
+void PrinterLLVM::subtargetEmitResolveVariantSchedClassImplHdr() const {
+  OS << "unsigned resolveVariantSchedClassImpl(unsigned SchedClass,\n"
+     << "    const MCInst *MI, const MCInstrInfo *MCII, unsigned CPUID) {\n";
+}
+
+void PrinterLLVM::subtargetEmitResolveVariantSchedClassImplEnd() const {
+  OS << "}\n";
+}
+
+void PrinterLLVM::subtargetEmitSchedClassSwitch() const {
+  OS << "  switch (SchedClass) {\n";
+}
+
+void PrinterLLVM::subtargetEmitSchedClassCase(unsigned VC,
+                                              std::string const &SCName) const {
+  OS << "  case " << VC << ": // " << SCName << '\n';
+}
+
+void PrinterLLVM::subtargetEmitSchedClassProcGuard(
+    unsigned Pi, bool OnlyExpandMCInstPredicates,
+    std::string const &ModelName) const {
+  OS << "    ";
+
+  // Emit a guard on the processor ID.
+  if (Pi != 0) {
+    OS << (OnlyExpandMCInstPredicates ? "if (CPUID == "
+                                      : "if (SchedModel->getProcessorID() == ");
+    OS << Pi << ") ";
+    OS << "{ // " << ModelName << '\n';
+  }
+}
+
+// Indent <= -1 (default = -1) means previous PE indent level.
+void PrinterLLVM::subtargetEmitPredicates(
+    CodeGenSchedTransition const &T, CodeGenSchedClass const &SC,
+    bool (*IsTruePredicate)(Record const *Rec), int Indent) const {
+  if (Indent > -1)
+    PE->setIndentLevel(Indent);
+  std::string Buffer;
+  raw_string_ostream SS(Buffer);
+
+  // If not all predicates are MCTrue, then we need an if-stmt.
+  unsigned const NumNonTruePreds =
+      T.PredTerm.size() - count_if(T.PredTerm, IsTruePredicate);
+
+  SS.indent(PE->getIndentLevel() * 2);
+
+  if (NumNonTruePreds) {
+    bool FirstNonTruePredicate = true;
+    SS << "if (";
+
+    PE->setIndentLevel(PE->getIndentLevel() + 2);
+
+    for (const Record *Rec : T.PredTerm) {
+      // Skip predicates that evaluate to "true".
+      if (IsTruePredicate(Rec))
+        continue;
+
+      if (FirstNonTruePredicate) {
+        FirstNonTruePredicate = false;
+      } else {
+        SS << "\n";
+        SS.indent(PE->getIndentLevel() * 2);
+        SS << "&& ";
+      }
+
+      if (Rec->isSubClassOf("MCSchedPredicate")) {
+        PE->expandPredicate(SS, Rec->getValueAsDef("Pred"));
+        continue;
+      }
+
+      // Expand this legacy predicate and wrap it around braces if there is more
+      // than one predicate to expand.
+      SS << ((NumNonTruePreds > 1) ? "(" : "")
+         << Rec->getValueAsString("Predicate")
+         << ((NumNonTruePreds > 1) ? ")" : "");
+    }
+
+    SS << ")\n"; // end of if-stmt
+    PE->decreaseIndentLevel();
+    SS.indent(PE->getIndentLevel() * 2);
+    PE->decreaseIndentLevel();
+  }
+
+  SS << "return " << T.ToClassIdx << "; // " << SC.Name << '\n';
+  OS << Buffer;
+}
+
+void PrinterLLVM::subtargetEmitProcTransitionEnd() const { OS << "    }\n"; }
+
+void PrinterLLVM::subtargetEmitSchedClassCaseEnd(
+    CodeGenSchedClass const &SC) const {
+  if (SC.isInferred())
+    OS << "    return " << SC.Index << ";\n";
+  OS << "    break;\n";
+}
+
+void PrinterLLVM::subtargetEmitSchedClassSwitchEnd() const { OS << "  };\n"; }
+
+// Used by method `SubtargetEmitter::emitSchedModelHelpersImpl()` to generate
+// epilogue code for the auto-generated helper.
+void PrinterLLVM::subtargetEmitSchedModelHelperEpilogue(
+    bool ShouldReturnZero) const {
+  if (ShouldReturnZero) {
+    OS << "  // Don't know how to resolve this scheduling class.\n"
+       << "  return 0;\n";
+    return;
+  }
+
+  OS << "  report_fatal_error(\"Expected a variant SchedClass\");\n";
+}
+
+void PrinterLLVM::subtargetEmitGenMCSubtargetInfoClass(
+    std::string const &TargetName, bool OverrideGetHwMode) const {
+  OS << "struct " << TargetName
+     << "GenMCSubtargetInfo : public MCSubtargetInfo {\n";
+  OS << "  " << TargetName << "GenMCSubtargetInfo(const Triple &TT,\n"
+     << "    StringRef CPU, StringRef TuneCPU, StringRef FS,\n"
+     << "    ArrayRef<SubtargetFeatureKV> PF,\n"
+     << "    ArrayRef<SubtargetSubTypeKV> PD,\n"
+     << "    const MCWriteProcResEntry *WPR,\n"
+     << "    const MCWriteLatencyEntry *WL,\n"
+     << "    const MCReadAdvanceEntry *RA, const InstrStage *IS,\n"
+     << "    const unsigned *OC, const unsigned *FP) :\n"
+     << "      MCSubtargetInfo(TT, CPU, TuneCPU, FS, PF, PD,\n"
+     << "                      WPR, WL, RA, IS, OC, FP) { }\n\n"
+     << "  unsigned resolveVariantSchedClass(unsigned SchedClass,\n"
+     << "      const MCInst *MI, const MCInstrInfo *MCII,\n"
+     << "      unsigned CPUID) const override {\n"
+     << "    return " << TargetName << "_MC"
+     << "::resolveVariantSchedClassImpl(SchedClass, MI, MCII, CPUID);\n";
+  OS << "  }\n";
+  if (OverrideGetHwMode)
+    OS << "  unsigned getHwMode() const override;\n";
+  OS << "};\n";
+}
+
+void PrinterLLVM::subtargetEmitMCSubtargetInfoImpl(
+    std::string const &TargetName, unsigned NumFeatures, unsigned NumProcs,
+    bool SchedModelHasItin) const {
+  OS << "\nstatic inline MCSubtargetInfo *create" << TargetName
+     << "MCSubtargetInfoImpl("
+     << "const Triple &TT, StringRef CPU, StringRef TuneCPU, StringRef FS) {\n";
+  OS << "  return new " << TargetName
+     << "GenMCSubtargetInfo(TT, CPU, TuneCPU, FS, ";
+  if (NumFeatures)
+    OS << TargetName << "FeatureKV, ";
+  else
+    OS << "std::nullopt, ";
+  if (NumProcs)
+    OS << TargetName << "SubTypeKV, ";
+  else
+    OS << "None, ";
+  OS << '\n';
+  OS.indent(22);
+  OS << TargetName << "WriteProcResTable, " << TargetName
+     << "WriteLatencyTable, " << TargetName << "ReadAdvanceTable, ";
+  OS << '\n';
+  OS.indent(22);
+  if (SchedModelHasItin) {
+    OS << TargetName << "Stages, " << TargetName << "OperandCycles, "
+       << TargetName << "ForwardingPaths";
+  } else
+    OS << "nullptr, nullptr, nullptr";
+  OS << ");\n}\n\n";
+}
+
+void PrinterLLVM::subtargetEmitIncludeSTIDesc() const {
+  OS << "#include \"llvm/Support/Debug.h\"\n";
+  OS << "#include \"llvm/Support/raw_ostream.h\"\n\n";
+}
+
+void PrinterLLVM::subtargetEmitDFAPacketizerClass(
+    std::string const &TargetName, std::string const &ClassName,
+    bool OverrideGetHwMode) const {
+  OS << "class DFAPacketizer;\n";
+  OS << "namespace " << TargetName << "_MC {\n"
+     << "unsigned resolveVariantSchedClassImpl(unsigned SchedClass,"
+     << " const MCInst *MI, const MCInstrInfo *MCII, unsigned CPUID);\n"
+     << "} // end namespace " << TargetName << "_MC\n\n";
+  OS << "struct " << ClassName << " : public TargetSubtargetInfo {\n"
+     << "  explicit " << ClassName << "(const Triple &TT, StringRef CPU, "
+     << "StringRef TuneCPU, StringRef FS);\n"
+     << "public:\n"
+     << "  unsigned resolveSchedClass(unsigned SchedClass, "
+     << " const MachineInstr *DefMI,"
+     << " const TargetSchedModel *SchedModel) const override;\n"
+     << "  unsigned resolveVariantSchedClass(unsigned SchedClass,"
+     << " const MCInst *MI, const MCInstrInfo *MCII,"
+     << " unsigned CPUID) const override;\n"
+     << "  DFAPacketizer *createDFAPacketizer(const InstrItineraryData *IID)"
+     << " const;\n";
+  if (OverrideGetHwMode)
+    OS << "  unsigned getHwMode() const override;\n";
+}
+
+void PrinterLLVM::subtargetEmitDFASubtargetInfoImpl(
+    std::string const &TargetName, std::string const &ClassName,
+    unsigned NumFeatures, unsigned NumProcs, bool SchedModelHasItin) const {
+  OS << ClassName << "::" << ClassName << "(const Triple &TT, StringRef CPU, "
+     << "StringRef TuneCPU, StringRef FS)\n"
+     << "  : TargetSubtargetInfo(TT, CPU, TuneCPU, FS, ";
+  if (NumFeatures)
+    OS << "makeArrayRef(" << TargetName << "FeatureKV, " << NumFeatures
+       << "), ";
+  else
+    OS << "std::nullopt, ";
+  if (NumProcs)
+    OS << "makeArrayRef(" << TargetName << "SubTypeKV, " << NumProcs << "), ";
+  else
+    OS << "None, ";
+  OS << '\n';
+  OS.indent(24);
+  OS << TargetName << "WriteProcResTable, " << TargetName
+     << "WriteLatencyTable, " << TargetName << "ReadAdvanceTable, ";
+  OS << '\n';
+  OS.indent(24);
+  if (SchedModelHasItin) {
+    OS << TargetName << "Stages, " << TargetName << "OperandCycles, "
+       << TargetName << "ForwardingPaths";
+  } else
+    OS << "nullptr, nullptr, nullptr";
+  OS << ") {}\n\n";
+}
+
+void PrinterLLVM::subtargetEmitDFAPacketizerClassEnd() const { OS << "};\n"; }
+
+void PrinterLLVM::subtargetEmitSTICtor() const {
+  OS << "#include \"llvm/CodeGen/TargetSchedule.h\"\n\n";
+}
+
+void PrinterLLVM::subtargetEmitExternKVArrays(std::string const &TargetName,
+                                              bool SchedModelsHasItin) const {
+  OS << "extern const llvm::SubtargetFeatureKV " << TargetName
+     << "FeatureKV[];\n";
+  OS << "extern const llvm::SubtargetSubTypeKV " << TargetName
+     << "SubTypeKV[];\n";
+  OS << "extern const llvm::MCWriteProcResEntry " << TargetName
+     << "WriteProcResTable[];\n";
+  OS << "extern const llvm::MCWriteLatencyEntry " << TargetName
+     << "WriteLatencyTable[];\n";
+  OS << "extern const llvm::MCReadAdvanceEntry " << TargetName
+     << "ReadAdvanceTable[];\n";
+
+  if (SchedModelsHasItin) {
+    OS << "extern const llvm::InstrStage " << TargetName << "Stages[];\n";
+    OS << "extern const unsigned " << TargetName << "OperandCycles[];\n";
+    OS << "extern const unsigned " << TargetName << "ForwardingPaths[];\n";
+  }
+}
+
+void PrinterLLVM::subtargetEmitClassDefs(std::string const &TargetName,
+                                         std::string const &ClassName,
+                                         unsigned NumFeatures,
+                                         unsigned NumProcs,
+                                         bool SchedModelsHasItin) const {
+  OS << ClassName << "::" << ClassName << "(const Triple &TT, StringRef CPU, "
+     << "StringRef TuneCPU, StringRef FS)\n"
+     << "  : TargetSubtargetInfo(TT, CPU, TuneCPU, FS, ";
+  if (NumFeatures)
+    OS << "makeArrayRef(" << TargetName << "FeatureKV, " << NumFeatures
+       << "), ";
+  else
+    OS << "None, ";
+  if (NumProcs)
+    OS << "makeArrayRef(" << TargetName << "SubTypeKV, " << NumProcs << "), ";
+  else
+    OS << "None, ";
+  OS << '\n';
+  OS.indent(24);
+  OS << TargetName << "WriteProcResTable, " << TargetName
+     << "WriteLatencyTable, " << TargetName << "ReadAdvanceTable, ";
+  OS << '\n';
+  OS.indent(24);
+  if (SchedModelsHasItin) {
+    OS << TargetName << "Stages, " << TargetName << "OperandCycles, "
+       << TargetName << "ForwardingPaths";
+  } else
+    OS << "nullptr, nullptr, nullptr";
+  OS << ") {}\n\n";
+}
+
+void PrinterLLVM::subtargetEmitResolveSchedClassHdr(
+    std::string const &ClassName) const {
+  OS << "unsigned " << ClassName
+     << "\n::resolveSchedClass(unsigned SchedClass, const MachineInstr *MI,"
+     << " const TargetSchedModel *SchedModel) const {\n";
+}
+
+void PrinterLLVM::subtargetEmitResolveSchedClassEnd(
+    std::string const &ClassName) const {
+  OS << "} // " << ClassName << "::resolveSchedClass\n\n";
+}
+
+void PrinterLLVM::subtargetEmitResolveVariantSchedClass(
+    std::string const &TargetName, std::string const &ClassName) const {
+  OS << "unsigned " << ClassName
+     << "\n::resolveVariantSchedClass(unsigned SchedClass, const MCInst *MI,"
+     << " const MCInstrInfo *MCII, unsigned CPUID) const {\n"
+     << "  return " << TargetName << "_MC"
+     << "::resolveVariantSchedClassImpl(SchedClass, MI, MCII, CPUID);\n"
+     << "} // " << ClassName << "::resolveVariantSchedClass\n\n";
+}
+
+void PrinterLLVM::subtargetEmitPredicateProlog(
+    const RecordKeeper &Records) const {
+  std::string Buffer;
+  raw_string_ostream Stream(Buffer);
+
+  // Collect all the PredicateProlog records and print them to the output
+  // stream.
+  std::vector<Record *> Prologs =
+      Records.getAllDerivedDefinitions("PredicateProlog");
+  llvm::sort(Prologs, LessRecord());
+  for (Record *P : Prologs)
+    Stream << P->getValueAsString("Code") << '\n';
+
+  OS << Buffer;
+}
+
+void PrinterLLVM::subtargetEmitParseFeaturesFunction(
+    std::string const &TargetName,
+    std::vector<Record *> const &Features) const {
+  OS << "// ParseSubtargetFeatures - Parses features string setting specified\n"
+     << "// subtarget options.\n"
+     << "void llvm::";
+  OS << TargetName;
+  OS << "Subtarget::ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, "
+     << "StringRef FS) {\n"
+     << "  LLVM_DEBUG(dbgs() << \"\\nFeatures:\" << FS);\n"
+     << "  LLVM_DEBUG(dbgs() << \"\\nCPU:\" << CPU);\n"
+     << "  LLVM_DEBUG(dbgs() << \"\\nTuneCPU:\" << TuneCPU << \"\\n\\n\");\n";
+
+  if (Features.empty()) {
+    OS << "}\n";
+    return;
+  }
+
+  OS << "  InitMCProcessorInfo(CPU, TuneCPU, FS);\n"
+     << "  const FeatureBitset &Bits = getFeatureBits();\n";
+
+  for (Record *R : Features) {
+    // Next record
+    StringRef const Instance = R->getName();
+    StringRef const Value = R->getValueAsString("Value");
+    StringRef const Attribute = R->getValueAsString("Attribute");
+
+    if (Value == "true" || Value == "false")
+      OS << "  if (Bits[" << TargetName << "::" << Instance << "]) "
+         << Attribute << " = " << Value << ";\n";
+    else
+      OS << "  if (Bits[" << TargetName << "::" << Instance << "] && "
+         << Attribute << " < " << Value << ") " << Attribute << " = " << Value
+         << ";\n";
+  }
+
+  OS << "}\n";
+}
+
+void PrinterLLVM::subtargetEmitExpandedSTIPreds(
+    StringRef const &TargetName, std::string const &ClassName,
+    CodeGenSchedModels const &SchedModels) {
+  initNewPE(TargetName);
+  PE->setClassPrefix(ClassName);
+  PE->setExpandDefinition(true);
+  PE->setByRef(false);
+  PE->setIndentLevel(0);
+
+  for (const STIPredicateFunction &Fn : SchedModels.getSTIPredicates())
+    PE->expandSTIPredicate(OS, Fn);
+}
+
+void PrinterLLVM::subtargetPrepareSchedClassPreds(
+    StringRef const &TargetName, bool OnlyExpandMCInstPredicates) {
+  initNewPE(TargetName);
+  PE->setByRef(false);
+  PE->setExpandForMC(OnlyExpandMCInstPredicates);
+}
+
+void PrinterLLVM::subtargetEmitExpandedSTIPredsMCAnaDecl(
+    StringRef const &TargetName, CodeGenSchedModels const &SchedModels) {
+  initNewPE(TargetName);
+  PE->setExpandForMC(true);
+  PE->setByRef(true);
+  for (const STIPredicateFunction &Fn : SchedModels.getSTIPredicates())
+    PE->expandSTIPredicate(OS, Fn);
+}
+
+void PrinterLLVM::subtargetEmitExpandedSTIPredsMCAnaDefs(
+    StringRef const &TargetName, std::string const &ClassPrefix,
+    CodeGenSchedModels const &SchedModels) const {
+  // Predicate expander was initialized before.
+  PE->setExpandDefinition(true);
+  PE->setClassPrefix(ClassPrefix);
+  PE->setIndentLevel(0);
+  for (const STIPredicateFunction &Fn : SchedModels.getSTIPredicates())
+    PE->expandSTIPredicate(OS, Fn);
+}
+
+void PrinterLLVM::subtargetEmitExpandedSTIPredsHeader(
+    StringRef const &TargetName, CodeGenSchedModels const &SchedModels) {
+  initNewPE(TargetName);
+  PE->setByRef(false);
+  for (const STIPredicateFunction &Fn : SchedModels.getSTIPredicates())
+    PE->expandSTIPredicate(OS, Fn);
+}
+
+void PrinterLLVM::subtargetEmitStageAndSycleTables(
+    std::string const &StageTable, std::string const &OperandCycleTable,
+    std::string const &BypassTable) const {
+  OS << StageTable;
+  OS << OperandCycleTable;
+  OS << BypassTable;
+}
+
+//---------------------------
+// Backend: InstrInfoEmitter
+//---------------------------
+
+void PrinterLLVM::instrInfoEmitSourceFileHeader() const {
+  emitSourceFileHeader("Target Instruction Enum Values and Descriptors", OS);
+}
+
+void PrinterLLVM::instrInfoPrintDefList(
+    const std::vector<Record *> &Uses, unsigned Num,
+    std::string (*GetQualifiedName)(Record const *R)) const {
+  OS << "static const MCPhysReg ImplicitList" << Num << "[] = { ";
+  for (Record *U : Uses)
+    OS << GetQualifiedName(U) << ", ";
+  OS << "0 };\n";
+}
+
+void PrinterLLVM::instrInfoEmitOperandInfoTabe(
+    std::vector<std::string> const &OperandInfo, unsigned N) const {
+  OS << "static const MCOperandInfo OperandInfo" << N << "[] = { ";
+  for (const std::string &Info : OperandInfo)
+    OS << "{ " << Info << " }, ";
+  OS << "};\n";
+}
+
+void PrinterLLVM::instrInfoEmitMCInstrDescHdr(std::string TargetName) const {
+  OS << "\nextern const MCInstrDesc " << TargetName << "Insts[] = {\n";
+}
+
+void PrinterLLVM::instrInfoEmitMCInstrDescEnd() const { OS << "};\n\n"; }
+
+void PrinterLLVM::instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
+                                      CodeGenInstruction const &Inst,
+                                      unsigned Num, int MinOperands) const {
+  OS << "  { ";
+  OS << Num << ",\t" << MinOperands << ",\t" << Inst.Operands.NumDefs << ",\t"
+     << Inst.TheDef->getValueAsInt("Size") << ",\t"
+     << SchedModels.getSchedClassIdx(Inst) << ",\t0";
+}
+
+void PrinterLLVM::instrInfoEmitTargetIndepFlags(
+    CodeGenInstruction const &Inst, bool GetAllowRegisterRenaming) const {
+  // clang-format off
+  if (Inst.isPreISelOpcode)    OS << "|(1ULL<<MCID::PreISelOpcode)";
+  if (Inst.isPseudo)           OS << "|(1ULL<<MCID::Pseudo)";
+  if (Inst.isMeta)             OS << "|(1ULL<<MCID::Meta)";
+  if (Inst.isReturn)           OS << "|(1ULL<<MCID::Return)";
+  if (Inst.isEHScopeReturn)    OS << "|(1ULL<<MCID::EHScopeReturn)";
+  if (Inst.isBranch)           OS << "|(1ULL<<MCID::Branch)";
+  if (Inst.isIndirectBranch)   OS << "|(1ULL<<MCID::IndirectBranch)";
+  if (Inst.isCompare)          OS << "|(1ULL<<MCID::Compare)";
+  if (Inst.isMoveImm)          OS << "|(1ULL<<MCID::MoveImm)";
+  if (Inst.isMoveReg)          OS << "|(1ULL<<MCID::MoveReg)";
+  if (Inst.isBitcast)          OS << "|(1ULL<<MCID::Bitcast)";
+  if (Inst.isAdd)              OS << "|(1ULL<<MCID::Add)";
+  if (Inst.isTrap)             OS << "|(1ULL<<MCID::Trap)";
+  if (Inst.isSelect)           OS << "|(1ULL<<MCID::Select)";
+  if (Inst.isBarrier)          OS << "|(1ULL<<MCID::Barrier)";
+  if (Inst.hasDelaySlot)       OS << "|(1ULL<<MCID::DelaySlot)";
+  if (Inst.isCall)             OS << "|(1ULL<<MCID::Call)";
+  if (Inst.canFoldAsLoad)      OS << "|(1ULL<<MCID::FoldableAsLoad)";
+  if (Inst.mayLoad)            OS << "|(1ULL<<MCID::MayLoad)";
+  if (Inst.mayStore)           OS << "|(1ULL<<MCID::MayStore)";
+  if (Inst.mayRaiseFPException) OS << "|(1ULL<<MCID::MayRaiseFPException)";
+  if (Inst.isPredicable)       OS << "|(1ULL<<MCID::Predicable)";
+  if (Inst.isConvertibleToThreeAddress) OS << "|(1ULL<<MCID::ConvertibleTo3Addr)";
+  if (Inst.isCommutable)       OS << "|(1ULL<<MCID::Commutable)";
+  if (Inst.isTerminator)       OS << "|(1ULL<<MCID::Terminator)";
+  if (Inst.isReMaterializable) OS << "|(1ULL<<MCID::Rematerializable)";
+  if (Inst.isNotDuplicable)    OS << "|(1ULL<<MCID::NotDuplicable)";
+  if (Inst.Operands.hasOptionalDef) OS << "|(1ULL<<MCID::HasOptionalDef)";
+  if (Inst.usesCustomInserter) OS << "|(1ULL<<MCID::UsesCustomInserter)";
+  if (Inst.hasPostISelHook)    OS << "|(1ULL<<MCID::HasPostISelHook)";
+  if (Inst.Operands.isVariadic)OS << "|(1ULL<<MCID::Variadic)";
+  if (Inst.hasSideEffects)     OS << "|(1ULL<<MCID::UnmodeledSideEffects)";
+  if (Inst.isAsCheapAsAMove)   OS << "|(1ULL<<MCID::CheapAsAMove)";
+  if (!GetAllowRegisterRenaming || Inst.hasExtraSrcRegAllocReq)
+    OS << "|(1ULL<<MCID::ExtraSrcRegAllocReq)";
+  if (!GetAllowRegisterRenaming || Inst.hasExtraDefRegAllocReq)
+    OS << "|(1ULL<<MCID::ExtraDefRegAllocReq)";
+  if (Inst.isRegSequence) OS << "|(1ULL<<MCID::RegSequence)";
+  if (Inst.isExtractSubreg) OS << "|(1ULL<<MCID::ExtractSubreg)";
+  if (Inst.isInsertSubreg) OS << "|(1ULL<<MCID::InsertSubreg)";
+  if (Inst.isConvergent) OS << "|(1ULL<<MCID::Convergent)";
+  if (Inst.variadicOpsAreDefs) OS << "|(1ULL<<MCID::VariadicOpsAreDefs)";
+  if (Inst.isAuthenticated) OS << "|(1ULL<<MCID::Authenticated)";
+  // clang-format on
+}
+
+void PrinterLLVM::instrInfoEmitTSFFlags(uint64_t Value) const {
+  OS << ", 0x";
+  OS.write_hex(Value);
+  OS << "ULL, ";
+}
+
+void PrinterLLVM::instrInfoEmitUseDefsLists(
+    std::map<std::vector<Record *>, unsigned> &EmittedLists,
+    std::vector<Record *> const &UseList,
+    std::vector<Record *> const &DefList) const {
+  if (UseList.empty())
+    OS << "nullptr, ";
+  else
+    OS << "ImplicitList" << EmittedLists[UseList] << ", ";
+
+  if (DefList.empty())
+    OS << "nullptr, ";
+  else
+    OS << "ImplicitList" << EmittedLists[DefList] << ", ";
+}
+
+void PrinterLLVM::instrInfoEmitOperandInfo(
+    std::vector<std::string> const &OperandInfo,
+    OperandInfoMapTy const &OpInfo) const {
+  if (OperandInfo.empty())
+    OS << "nullptr";
+  else
+    OS << "OperandInfo" << OpInfo.find(OperandInfo)->second;
+}
+
+void PrinterLLVM::instrInfoEmitRecordEnd(unsigned InstNum,
+                                         std::string const &InstName) const {
+  OS << " },  // Inst #" << InstNum << " = " << InstName << "\n";
+}
+
+void PrinterLLVM::instrInfoEmitStringLiteralDef(
+    std::string const &TargetName,
+    SequenceToOffsetTable<std::string> InstrNames) const {
+  InstrNames.emitStringLiteralDef(OS, Twine("extern const char ") + TargetName +
+                                          "InstrNameData[]");
+}
+
+void PrinterLLVM::instrInfoEmitInstrNameIndices(
+    std::string const &TargetName,
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+    SequenceToOffsetTable<std::string> const &InstrNames) const {
+  OS << "extern const unsigned " << TargetName << "InstrNameIndices[] = {";
+  unsigned Num = 0;
+  for (const CodeGenInstruction *Inst : NumberedInstructions) {
+    // Newline every eight entries.
+    if (Num % 8 == 0)
+      OS << "\n    ";
+    OS << InstrNames.get(std::string(Inst->TheDef->getName())) << "U, ";
+    ++Num;
+  }
+  OS << "\n};\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitInstrDeprFeatures(
+    std::string const &TargetName, std::string const &TargetNamespace,
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+    SequenceToOffsetTable<std::string> const &InstrNames) const {
+  OS << "extern const uint8_t " << TargetName
+     << "InstrDeprecationFeatures[] = {";
+  unsigned Num = 0;
+  for (const CodeGenInstruction *Inst : NumberedInstructions) {
+    if (Num % 8 == 0)
+      OS << "\n    ";
+    if (!Inst->HasComplexDeprecationPredicate &&
+        !Inst->DeprecatedReason.empty())
+      OS << TargetNamespace << "::" << Inst->DeprecatedReason << ", ";
+    else
+      OS << "uint8_t(-1), ";
+    ++Num;
+  }
+  OS << "\n};\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitInstrComplexDeprInfos(
+    std::string const &TargetName,
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
+  OS << "extern const MCInstrInfo::ComplexDeprecationPredicate " << TargetName
+     << "InstrComplexDeprecationInfos[] = {";
+  unsigned Num = 0;
+  for (const CodeGenInstruction *Inst : NumberedInstructions) {
+    if (Num % 8 == 0)
+      OS << "\n    ";
+    if (Inst->HasComplexDeprecationPredicate)
+      // Emit a function pointer to the complex predicate method.
+      OS << "&get" << Inst->DeprecatedReason << "DeprecationInfo, ";
+    else
+      OS << "nullptr, ";
+    ++Num;
+  }
+  OS << "\n};\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitMCInstrInfoInitRoutine(
+    std::string const &TargetName, unsigned NumberedInstrSize,
+    bool HasDeprecationFeatures, bool HasComplexDeprecationInfos) const {
+  OS << "static inline void Init" << TargetName
+     << "MCInstrInfo(MCInstrInfo *II) {\n";
+  OS << "  II->InitMCInstrInfo(" << TargetName << "Insts, " << TargetName
+     << "InstrNameIndices, " << TargetName << "InstrNameData, ";
+  if (HasDeprecationFeatures)
+    OS << TargetName << "InstrDeprecationFeatures, ";
+  else
+    OS << "nullptr, ";
+  if (HasComplexDeprecationInfos)
+    OS << TargetName << "InstrComplexDeprecationInfos, ";
+  else
+    OS << "nullptr, ";
+  OS << NumberedInstrSize << ");\n}\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitClassStruct(std::string const &ClassName) const {
+  OS << "struct " << ClassName << " : public TargetInstrInfo {\n"
+     << "  explicit " << ClassName
+     << "(int CFSetupOpcode = -1, int CFDestroyOpcode = -1, int CatchRetOpcode "
+        "= -1, int ReturnOpcode = -1);\n"
+     << "  ~" << ClassName << "() override = default;\n";
+  OS << "\n};\n";
+}
+
+void PrinterLLVM::instrInfoEmitTIIHelperMethod(StringRef const &TargetName,
+                                               Record const *Rec,
+                                               bool ExpandDefinition) const {
+  OS << (ExpandDefinition ? "" : "static ") << "bool ";
+  if (ExpandDefinition)
+    OS << TargetName << "InstrInfo::";
+  OS << Rec->getValueAsString("FunctionName");
+  OS << "(const MachineInstr &MI)";
+  if (!ExpandDefinition) {
+    OS << ";\n";
+    return;
+  }
+
+  OS << " {\n";
+  OS.indent(PE->getIndentLevel() * 2);
+  PE->expandStatement(OS, Rec->getValueAsDef("Body"));
+  OS << "\n}\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitExternArrays(
+    std::string const &TargetName, bool HasDeprecationFeatures,
+    bool HasComplexDeprecationInfos) const {
+  OS << "extern const MCInstrDesc " << TargetName << "Insts[];\n";
+  OS << "extern const unsigned " << TargetName << "InstrNameIndices[];\n";
+  OS << "extern const char " << TargetName << "InstrNameData[];\n";
+  if (HasDeprecationFeatures)
+    OS << "extern const uint8_t " << TargetName
+       << "InstrDeprecationFeatures[];\n";
+  if (HasComplexDeprecationInfos)
+    OS << "extern const MCInstrInfo::ComplexDeprecationPredicate " << TargetName
+       << "InstrComplexDeprecationInfos[];\n";
+}
+
+void PrinterLLVM::instrInfoEmitMCInstrInfoInit(
+    std::string const &TargetName, std::string const &ClassName,
+    unsigned NumberedInstrSize, bool HasDeprecationFeatures,
+    bool HasComplexDeprecationInfos) const {
+  OS << ClassName << "::" << ClassName
+     << "(int CFSetupOpcode, int CFDestroyOpcode, int CatchRetOpcode, int "
+        "ReturnOpcode)\n"
+     << "  : TargetInstrInfo(CFSetupOpcode, CFDestroyOpcode, CatchRetOpcode, "
+        "ReturnOpcode) {\n"
+     << "  InitMCInstrInfo(" << TargetName << "Insts, " << TargetName
+     << "InstrNameIndices, " << TargetName << "InstrNameData, ";
+  if (HasDeprecationFeatures)
+    OS << TargetName << "InstrDeprecationFeatures, ";
+  else
+    OS << "nullptr, ";
+  if (HasComplexDeprecationInfos)
+    OS << TargetName << "InstrComplexDeprecationInfos, ";
+  else
+    OS << "nullptr, ";
+  OS << NumberedInstrSize << ");\n}\n";
+}
+
+void PrinterLLVM::instrInfoEmitOperandEnum(
+    std::map<std::string, unsigned> const &Operands) const {
+  OS << "enum {\n";
+  for (const auto &Op : Operands)
+    OS << "  " << Op.first << " = " << Op.second << ",\n";
+
+  OS << "  OPERAND_LAST";
+  OS << "\n};\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetNamedOperandIdx(
+    std::map<std::string, unsigned> const &Operands,
+    OpNameMapTy const &OperandMap) const {
+  OS << "LLVM_READONLY\n";
+  OS << "int16_t getNamedOperandIdx(uint16_t Opcode, uint16_t NamedIdx) {\n";
+  if (!Operands.empty()) {
+    OS << "  static const int16_t OperandMap [][" << Operands.size()
+       << "] = {\n";
+    for (const auto &Entry : OperandMap) {
+      const std::map<unsigned, unsigned> &OpList = Entry.first;
+      OS << "{";
+
+      // Emit a row of the OperandMap table
+      for (unsigned I = 0, E = Operands.size(); I != E; ++I)
+        OS << (OpList.count(I) == 0 ? -1 : (int)OpList.find(I)->second) << ", ";
+
+      OS << "},\n";
+    }
+    OS << "};\n";
+
+    OS << "  switch(Opcode) {\n";
+    unsigned TableIndex = 0;
+    for (const auto &Entry : OperandMap) {
+      for (const std::string &Name : Entry.second)
+        OS << "  case " << Name << ":\n";
+
+      OS << "    return OperandMap[" << TableIndex++ << "][NamedIdx];\n";
+    }
+    OS << "  default: return -1;\n";
+    OS << "  }\n";
+  } else {
+    // There are no operands, so no need to emit anything
+    OS << "  return -1;\n";
+  }
+  OS << "}\n";
+}
+
+void PrinterLLVM::instrInfoEmitOpTypeEnumPartI() const {
+  OS << "enum OperandType {\n";
+}
+
+void PrinterLLVM::instrInfoEmitOpTypeEnumPartII(StringRef const &OpName,
+                                                unsigned EnumVal) const {
+  OS << "  " << OpName << " = " << EnumVal << ",\n";
+}
+
+void PrinterLLVM::instrInfoEmitOpTypeEnumPartIII() const {
+  OS << "  OPERAND_TYPE_LIST_END"
+     << "\n};\n";
+}
+
+void PrinterLLVM::instrInfoEmitOpTypeOffsetTable(
+    std::vector<int> OperandOffsets, unsigned OpRecSize,
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
+  OS << ((OpRecSize <= UINT16_MAX) ? "  const uint16_t" : "  const uint32_t");
+  OS << " Offsets[] = {\n";
+  for (int I = 0, E = OperandOffsets.size(); I != E; ++I) {
+    OS << "    /* " << NumberedInstructions[I]->TheDef->getName() << " */\n";
+    OS << "    " << OperandOffsets[I] << ",\n";
+  }
+  OS << "  };\n";
+}
+
+void PrinterLLVM::instrInfoEmitOpcodeOpTypesTable(
+    unsigned EnumVal, std::vector<Record *> const &OperandRecords,
+    std::vector<int> OperandOffsets,
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
+  OS << "\n  using namespace OpTypes;\n";
+  OS << ((EnumVal <= INT8_MAX) ? "  const int8_t" : "  const int16_t");
+  OS << " OpcodeOperandTypes[] = {\n    ";
+  for (int I = 0, E = OperandRecords.size(), CurOffset = 0; I != E; ++I) {
+    // We print each Opcode's operands in its own row.
+    if (I == OperandOffsets[CurOffset]) {
+      OS << "\n    /* " << NumberedInstructions[CurOffset]->TheDef->getName()
+         << " */\n    ";
+      while (OperandOffsets[++CurOffset] == I)
+        OS << "/* " << NumberedInstructions[CurOffset]->TheDef->getName()
+           << " */\n    ";
+    }
+    Record *OpR = OperandRecords[I];
+    if ((OpR->isSubClassOf("Operand") || OpR->isSubClassOf("RegisterOperand") ||
+         OpR->isSubClassOf("RegisterClass")) &&
+        !OpR->isAnonymous())
+      OS << OpR->getName();
+    else
+      OS << -1;
+    OS << ", ";
+  }
+  OS << "\n  };\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetOpTypeHdr() const {
+  OS << "LLVM_READONLY\n";
+  OS << "static int getOperandType(uint16_t Opcode, uint16_t OpIdx) {\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetOpTypeReturn() const {
+  OS << "  return OpcodeOperandTypes[Offsets[Opcode] + OpIdx];\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetOpTypeUnreachable() const {
+  OS << "  llvm_unreachable(\"No instructions defined\");\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetOpTypeEnd() const { OS << "}\n"; }
+
+void PrinterLLVM::instrInfoEmitGetMemOpSizeHdr() const {
+  OS << "LLVM_READONLY\n";
+  OS << "static int getMemOperandSize(int OpType) {\n";
+  OS << "  switch (OpType) {\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetOpMemSizeTbl(
+    std::map<int, std::vector<StringRef>> const &SizeToOperandName) const {
+  OS << "  default: return 0;\n";
+  for (auto KV : SizeToOperandName) {
+    for (const StringRef &OperandName : KV.second)
+      OS << "  case OpTypes::" << OperandName << ":\n";
+    OS << "    return " << KV.first << ";\n\n";
+  }
+  OS << "  }\n}\n";
+}
+
+std::string
+PrinterLLVM::instrInfoGetInstMapEntry(StringRef const &Namespace,
+                                      StringRef const &InstrName) const {
+  return Namespace.str() + "::" + InstrName.str();
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpSizeHdr() const {
+  OS << "LLVM_READONLY static unsigned\n";
+  OS << "getLogicalOperandSize(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpSizeTable(
+    size_t LogicalOpListSize,
+    std::vector<const std::vector<unsigned> *> const &LogicalOpSizeList) const {
+  OS << "  static const unsigned SizeMap[][" << LogicalOpListSize << "] = {\n";
+  for (auto &R : LogicalOpSizeList) {
+    const auto &Row = *R;
+    OS << "   {";
+    int I;
+    for (I = 0; I < static_cast<int>(Row.size()); ++I) {
+      OS << Row[I] << ", ";
+    }
+    for (; I < static_cast<int>(LogicalOpListSize); ++I) {
+      OS << "0, ";
+    }
+    OS << "}, ";
+    OS << "\n";
+  }
+  OS << "  };\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpSizeSwitch(
+    std::map<unsigned, std::vector<std::string>> InstMap) const {
+  OS << "  switch (Opcode) {\n";
+  OS << "  default: return LogicalOpIdx;\n";
+  for (auto &P : InstMap) {
+    auto OpMapIdx = P.first;
+    const auto &Insts = P.second;
+    for (const auto &Inst : Insts) {
+      OS << "  case " << Inst << ":\n";
+    }
+    OS << "    return SizeMap[" << OpMapIdx << "][LogicalOpIdx];\n";
+  }
+  OS << "  }\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpSizeReturn() const {
+  OS << "  return LogicalOpIdx;\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpSizeEnd() const { OS << "}\n"; }
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpIdx() const {
+  OS << "LLVM_READONLY static inline unsigned\n";
+  OS << "getLogicalOperandIdx(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
+  OS << "  auto S = 0U;\n";
+  OS << "  for (auto i = 0U; i < LogicalOpIdx; ++i)\n";
+  OS << "    S += getLogicalOperandSize(Opcode, i);\n";
+  OS << "  return S;\n";
+  OS << "}\n";
+}
+
+std::string
+PrinterLLVM::instrInfoGetOpTypeListEntry(StringRef const &Namespace,
+                                         StringRef const &OpName) const {
+  return Namespace.str() + "::OpTypes::" + OpName.str();
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpTypeHdr() const {
+  OS << "LLVM_READONLY static int\n";
+  OS << "getLogicalOperandType(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
+}
+void PrinterLLVM::instrInfoEmitGetLogicalOpTypeTable(
+    size_t OpTypeListSize,
+    std::vector<const std::vector<std::string> *> const &LogicalOpTypeList)
+    const {
+  OS << "  static const int TypeMap[][" << OpTypeListSize << "] = {\n";
+  for (int R = 0, Rs = LogicalOpTypeList.size(); R < Rs; ++R) {
+    const auto &Row = *LogicalOpTypeList[R];
+    OS << "   {";
+    int I, S = Row.size();
+    for (I = 0; I < S; ++I) {
+      if (I > 0)
+        OS << ", ";
+      OS << Row[I];
+    }
+    for (; I < static_cast<int>(OpTypeListSize); ++I) {
+      if (I > 0)
+        OS << ", ";
+      OS << "-1";
+    }
+    OS << "}";
+    if (R != Rs - 1)
+      OS << ",";
+    OS << "\n";
+  }
+  OS << "  };\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpTypeSwitch(
+    std::map<unsigned, std::vector<std::string>> InstMap) const {
+  OS << "  switch (Opcode) {\n";
+  OS << "  default: return -1;\n";
+  for (auto &P : InstMap) {
+    auto OpMapIdx = P.first;
+    const auto &Insts = P.second;
+    for (const auto &Inst : Insts) {
+      OS << "  case " << Inst << ":\n";
+    }
+    OS << "    return TypeMap[" << OpMapIdx << "][LogicalOpIdx];\n";
+  }
+  OS << "  }\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpTypeReturn() const {
+  OS << "  return -1;\n";
+}
+
+void PrinterLLVM::instrInfoEmitGetLogicalOpTypeEnd() const { OS << "}\n"; }
+
+void PrinterLLVM::instrInfoEmitDeclareMCInstFeatureClasses() const {
+  OS << "class MCInst;\n";
+  OS << "class FeatureBitset;\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitPredFcnDecl(RecVec const &TIIPredicates) const {
+  for (const Record *Rec : TIIPredicates) {
+    OS << "bool " << Rec->getValueAsString("FunctionName")
+       << "(const MCInst &MI);\n";
+  }
+
+  OS << "void verifyInstructionPredicates(unsigned Opcode, const FeatureBitset "
+        "&Features);\n";
+}
+
+void PrinterLLVM::instrInfoEmitPredFcnImpl(StringRef const &TargetName,
+                                           RecVec const &TIIPredicates) {
+  initNewPE(TargetName);
+  PE->setExpandForMC(true);
+  for (const Record *Rec : TIIPredicates) {
+    OS << "bool " << Rec->getValueAsString("FunctionName");
+    OS << "(const MCInst &MI) {\n";
+
+    OS.indent(PE->getIndentLevel() * 2);
+    PE->expandStatement(OS, Rec->getValueAsDef("Body"));
+    OS << "\n}\n\n";
+  }
+}
+
+void PrinterLLVM::instrInfoEmitInstrPredVerifierIncludes() const {
+  OS << "#include <sstream>\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitSubtargetFeatureBitEnumeration(
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
+    const {
+  // Emit the subtarget feature enumeration.
+  SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(SubtargetFeatures,
+                                                           OS);
+}
+
+void PrinterLLVM::instrInfoEmitEmitSTFNameTable(
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
+    const {
+  OS << "#ifndef NDEBUG\n";
+  SubtargetFeatureInfo::emitNameTable(SubtargetFeatures, OS);
+  OS << "#endif // NDEBUG\n\n";
+}
+
+static std::string
+getNameForFeatureBitset(const std::vector<Record *> &FeatureBitset) {
+  std::string Name = "CEFBS";
+  for (const auto &Feature : FeatureBitset)
+    Name += ("_" + Feature->getName()).str();
+  return Name;
+}
+
+void PrinterLLVM::instrInfoEmitFeatureBitsEnum(
+    std::vector<std::vector<Record *>> const &FeatureBitsets) const {
+  OS << "// Feature bitsets.\n"
+     << "enum : " << getMinimalTypeForRange(FeatureBitsets.size()) << " {\n"
+     << "  CEFBS_None,\n";
+  for (const auto &FeatureBitset : FeatureBitsets) {
+    if (FeatureBitset.empty())
+      continue;
+    OS << "  " << getNameForFeatureBitset(FeatureBitset) << ",\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::instrInfoEmitFeatureBitsArray(
+    std::vector<std::vector<Record *>> const &FeatureBitsets,
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+        &SubtargetFeatures) const {
+  OS << "static constexpr FeatureBitset FeatureBitsets[] = {\n"
+     << "  {}, // CEFBS_None\n";
+  for (const auto &FeatureBitset : FeatureBitsets) {
+    if (FeatureBitset.empty())
+      continue;
+    OS << "  {";
+    for (const auto &Feature : FeatureBitset) {
+      const auto &I = SubtargetFeatures.find(Feature);
+      assert(I != SubtargetFeatures.end() && "Didn't import predicate?");
+      OS << I->second.getEnumBitName() << ", ";
+    }
+    OS << "},\n";
+  }
+  OS << "};\n";
+}
+
+void PrinterLLVM::instrInfoEmitPredVerifier(
+    std::vector<std::vector<Record *>> const &FeatureBitsets,
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+        &SubtargetFeatures,
+    CodeGenTarget const &Target) const {
+  OS << "void verifyInstructionPredicates(\n"
+     << "    unsigned Opcode, const FeatureBitset &Features) {\n";
+  emitIfNotDef("NDEBUG", true);
+  OS << "  static " << getMinimalTypeForRange(FeatureBitsets.size())
+     << " RequiredFeaturesRefs[] = {\n";
+  unsigned InstIdx = 0;
+  for (const CodeGenInstruction *Inst : Target.getInstructionsByEnumValue()) {
+    OS << "    CEFBS";
+    unsigned NumPredicates = 0;
+    for (Record *Predicate : Inst->TheDef->getValueAsListOfDefs("Predicates")) {
+      const auto &I = SubtargetFeatures.find(Predicate);
+      if (I != SubtargetFeatures.end()) {
+        OS << '_' << I->second.TheDef->getName();
+        NumPredicates++;
+      }
+    }
+    if (!NumPredicates)
+      OS << "_None";
+    OS << ", // " << Inst->TheDef->getName() << " = " << InstIdx << "\n";
+    InstIdx++;
+  }
+  OS << "  };\n\n";
+  OS << "  assert(Opcode < " << InstIdx << ");\n";
+  OS << "  FeatureBitset AvailableFeatures = "
+        "computeAvailableFeatures(Features);\n";
+  OS << "  const FeatureBitset &RequiredFeatures = "
+        "FeatureBitsets[RequiredFeaturesRefs[Opcode]];\n";
+  OS << "  FeatureBitset MissingFeatures =\n"
+     << "      (AvailableFeatures & RequiredFeatures) ^\n"
+     << "      RequiredFeatures;\n"
+     << "  if (MissingFeatures.any()) {\n"
+     << "    std::ostringstream Msg;\n"
+     << "    Msg << \"Attempting to emit \" << &" << Target.getName()
+     << "InstrNameData[" << Target.getName() << "InstrNameIndices[Opcode]]\n"
+     << "        << \" instruction but the \";\n"
+     << "    for (unsigned i = 0, e = MissingFeatures.size(); i != e; ++i)\n"
+     << "      if (MissingFeatures.test(i))\n"
+     << "        Msg << SubtargetFeatureNames[i] << \" \";\n"
+     << "    Msg << \"predicate(s) are not met\";\n"
+     << "    report_fatal_error(Msg.str().c_str());\n"
+     << "  }\n";
+  emitIfNotDef("NDEBUG", false);
+  OS << "}\n";
+}
+
+void PrinterLLVM::instrInfoEmitEnums(
+    CodeGenTarget const &Target, StringRef const &Namespace,
+    CodeGenSchedModels const &SchedModels) const {
+  emitIncludeToggle("GET_INSTRINFO_ENUM", true);
+
+  emitNamespace("llvm", true);
+  // We must emit the PHI opcode first...
+  emitNamespace(Namespace.str(), true);
+  unsigned Num = 0;
+  OS << "  enum {\n";
+  for (const CodeGenInstruction *Inst : Target.getInstructionsByEnumValue())
+    OS << "    " << Inst->TheDef->getName() << "\t= " << Num++ << ",\n";
+  OS << "    INSTRUCTION_LIST_END = " << Num << "\n";
+  OS << "  };\n\n";
+  emitNamespace(Namespace.str(), false);
+  emitNamespace("llvm", false);
+  emitIncludeToggle("GET_INSTRINFO_ENUM", false);
+
+  emitIncludeToggle("GET_INSTRINFO_SCHED_ENUM", true);
+  emitNamespace("llvm", true);
+  emitNamespace(Namespace.str(), true);
+  emitNamespace("Sched", true);
+  Num = 0;
+  OS << "  enum {\n";
+  for (const auto &Class : SchedModels.explicit_classes())
+    OS << "    " << Class.Name << "\t= " << Num++ << ",\n";
+  OS << "    SCHED_LIST_END = " << Num << "\n";
+  OS << "  };\n";
+  emitNamespace("Sched", false);
+  emitNamespace(Namespace.str(), false);
+  emitNamespace("llvm", false);
+
+  emitIncludeToggle("GET_INSTRINFO_SCHED_ENUM", false);
+}
+
+void PrinterLLVM::instrInfoEmitTIIPredicates(StringRef const &TargetName,
+                                             RecVec const &TIIPredicates,
+                                             bool ExpandDefinition) {
+  initNewPE(TargetName);
+  PE->setExpandForMC(false);
+
+  for (const Record *Rec : TIIPredicates) {
+    instrInfoEmitTIIHelperMethod(TargetName, Rec, ExpandDefinition);
+  }
+}
+
+void PrinterLLVM::instrInfoEmitComputeAssemblerAvailableFeatures(
+    StringRef const &TargetName,
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
+    const {
+  SubtargetFeatureInfo::emitComputeAssemblerAvailableFeatures(
+      TargetName, "", "computeAvailableFeatures", SubtargetFeatures, OS);
 }
 
 } // end namespace llvm

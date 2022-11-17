@@ -10,6 +10,7 @@
 #define LLVM_UTILS_TABLEGEN_PRINTERTYPES_H
 
 #include "llvm/ADT/BitVector.h"
+
 namespace llvm {
 
 enum PrinterLanguage {

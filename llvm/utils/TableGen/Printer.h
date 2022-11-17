@@ -13,8 +13,12 @@
 #include "CodeGenRegisters.h"
 #include "CodeGenTarget.h"
 #include "DecoderEmitterTypes.h"
+#include "InstrInfoEmitterTypes.h"
 #include "PrinterTypes.h"
 #include "RegisterInfoEmitterTypes.h"
+#include "SubtargetEmitterTypes.h"
+#include "llvm/MC/MCInstrItineraries.h"
+#include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
@@ -70,6 +74,12 @@ private:
   std::string ReturnOK, ReturnFail;
   std::string Locals;
 
+  //----------------------------
+  // Backends: InstrInfo
+  //           SubTargetInfo
+  //----------------------------
+  PredicateExpander *PE = nullptr;
+
 public:
   PrinterLLVM(formatted_raw_ostream &OS);
 
@@ -84,15 +94,37 @@ public:
 
   virtual void flushOS() const { OS.flush(); }
 
+  //------------------------------
+  // PredicateExpander management
+  //------------------------------
+  void initNewPE(StringRef const &Target) {
+    if (PE) {
+      delete PE;
+      PE = nullptr;
+    }
+    PE = getNewPE(Target);
+  }
+  virtual PredicateExpander *getNewPE(StringRef const &Target) const {
+    return new PredicateExpanderLLVM(Target);
+  }
+
   //--------------------------
   // General printing methods
   //--------------------------
 
   virtual void emitIncludeToggle(std::string const &Name, bool Begin,
-                                 bool Newline = true) const;
+                                 bool Newline = true,
+                                 bool UndefAtEnd = false) const;
   virtual void emitNewline(unsigned Count) const {
     for (unsigned I = Count; I > 0; --I)
       OS << "\n";
+  }
+  virtual void emitIfNotDef(std::string const &Name, bool Begin) const {
+    if (Begin) {
+      OS << "#ifndef " << Name << "\n";
+    } else {
+      OS << "#endif // " << Name << "\n\n";
+    }
   }
   virtual void emitString(std::string const &Str) const { OS << Str; }
   virtual void emitNamespace(std::string const &Name, bool Begin,
@@ -399,6 +431,324 @@ public:
   asmWriterEmitPrintMC(std::string const &TargetName,
                        StringRef const &ClassName,
                        std::vector<const Record *> const &MCOpPredicates) const;
+
+  //-------------------------
+  // Backend: Subtarget
+  //-------------------------
+
+  virtual void subtargetEmitSourceFileHeader() const;
+  virtual void
+  subtargetEmitFeatureEnum(DenseMap<Record *, unsigned> &FeatureMap,
+                           std::vector<Record *> const &DefList,
+                           unsigned N) const;
+  virtual void subtargetEmitGetSTIMacro(StringRef const &Value,
+                                        StringRef const &Attribute) const;
+  virtual void subtargetEmitHwModes(CodeGenHwModes const &CGH,
+                                    std::string const &ClassName) const;
+  virtual void subtargetEmitFeatureKVHeader(std::string const &Target) const;
+  virtual void subtargetEmitFeatureKVEnd() const;
+  virtual void subtargetEmitFeatureKVPartI(std::string const &Target,
+                                           StringRef const &CommandLineName,
+                                           StringRef const &Name,
+                                           StringRef const &Desc) const;
+  virtual void subtargetEmitFeatureKVPartII() const;
+  virtual void subtargetEmitPrintFeatureMask(
+      std::array<uint64_t, MAX_SUBTARGET_WORDS> const &Mask) const;
+  virtual void subtargetEmitCPUKVHeader(std::string const &Target) const;
+  virtual void subtargetEmitCPUKVEnd() const;
+  virtual void subtargetEmitCPUKVPartI(StringRef const &Name) const;
+  virtual void subtargetEmitCPUKVPartII() const;
+  virtual void
+  subtargetEmitCPUKVPartIII(std::string const &ProcModelName) const;
+  virtual void subtargetEmitDBGMacrosBegin() const;
+  virtual void subtargetEmitDBGMacrosEnd() const;
+  virtual void subtargetEmitFunctionalItinaryUnits(
+      CodeGenSchedModels const &SchedModels) const;
+  virtual std::string const
+  subtargetGetBeginStageTable(std::string const &TargetName) const;
+  virtual std::string const
+  subtargetGetBeginOperandCycleTable(std::string const &TargetName) const;
+  virtual std::string const
+  subtargetGetBeginBypassTable(std::string const &TargetName) const;
+  virtual std::string const subtargetGetEndStageTable() const;
+  virtual std::string const subtargetGetEndOperandCycleTable() const;
+  virtual std::string const subtargetGetEndBypassTable() const;
+  virtual void subtargetFormItineraryStageString(std::string const &Name,
+                                                 Record *ItinData,
+                                                 std::string &ItinString,
+                                                 unsigned &NStages) const;
+  virtual void
+  subtargetFormItineraryOperandCycleString(Record *ItinData,
+                                           std::string &ItinString,
+                                           unsigned &NOperandCycles) const;
+  virtual void
+  subtargetFormItineraryBypassString(const std::string &Name, Record *ItinData,
+                                     std::string &ItinString,
+                                     unsigned NOperandCycles) const;
+  virtual std::string
+  subtargetGetStageEntryPartI(std::string const &ItinStageString,
+                              unsigned StageCount) const;
+  virtual std::string subtargetGetStageEntryPartII(unsigned StageCount,
+                                                   unsigned NStages) const;
+  virtual std::string subtargetGetStageEntryPartIII() const;
+  virtual std::string subtargetGetOperandCycleEntryPartI(
+      std::string const &ItinOperandCycleString) const;
+  virtual std::string
+  subtargetGetOperandCycleEntryPartII(unsigned OperandCycleCount,
+                                      unsigned NOperandCycles) const;
+  virtual std::string subtargetGetOperandCycleEntryPartIII(
+      std::string const &OperandIdxComment) const;
+  virtual std::string subtargetGetOperandCycleEntryPartIV(
+      std::string const &ItinBypassString,
+      std::string const &OperandIdxComment) const;
+  virtual void subtargetEmitProcessorItineraryTable(
+      std::string const &ItinsDefName, std::vector<InstrItinerary> &ItinList,
+      CodeGenSchedModels const &SchedModels) const;
+  virtual void subtargetEmitPreOperandTableComment() const;
+  virtual void
+  subtargetEmitSchedClassTables(SchedClassTablesT &SchedTables,
+                                std::string const &TargetName,
+                                CodeGenSchedModels const &SchedModels) const;
+  virtual unsigned
+  subtargetEmitRegisterFileTables(CodeGenProcModel const &ProcModel) const;
+  virtual void subtargetEmitMCExtraProcInfoTableHeader(
+      std::string const &ProcModelName) const;
+  virtual void subtargetEmitMCExtraProcInfoTableEnd() const;
+  virtual void subtargetEmitReorderBufferSize(int64_t ReorderBufferSize) const;
+  virtual void subtargetEmitMaxRetirePerCycle(int64_t MaxRetirePerCycle) const;
+  virtual void subtargetEmitRegisterFileInfo(CodeGenProcModel const &ProcModel,
+                                             unsigned NumRegisterFiles,
+                                             unsigned NumCostEntries) const;
+  virtual void subtargetEmitResourceDescriptorLoadQueue(unsigned QueueID) const;
+  virtual void
+  subtargetEmitResourceDescriptorStoreQueue(unsigned QueueID) const;
+  virtual void subtargetEmitProcessorResourceSubUnits(
+      const CodeGenProcModel &ProcModel,
+      CodeGenSchedModels const &SchedModels) const;
+  virtual void
+  subtargetEmitMCProcResourceDescHeader(std::string const &ProcModelName) const;
+  virtual void subtargetEmitMCProcResourceDescEnd() const;
+  virtual void
+  subtargetEmitMCProcResourceDesc(Record const *PRDef, Record const *SuperDef,
+                                  std::string const &ProcModelName,
+                                  unsigned SubUnitsOffset, unsigned SuperIdx,
+                                  unsigned NumUnits, int BufferSize, unsigned I,
+                                  unsigned const SubUnitsBeginOffset) const;
+  virtual void subtargetEmitProcessorProp(Record const *R, StringRef const Name,
+                                          char Separator) const;
+  virtual void subtargetEmitProcModelHeader(std::string const &ModelName) const;
+  virtual void
+  subtargetEmitProcModel(CodeGenProcModel const &PM,
+                         CodeGenSchedModels const &SchedModels) const;
+  virtual void subtargetEmitResolveVariantSchedClassImplHdr() const;
+  virtual void subtargetEmitResolveVariantSchedClassImplEnd() const;
+  virtual void subtargetEmitSchedClassSwitch() const;
+  virtual void subtargetEmitSchedClassSwitchEnd() const;
+  virtual void subtargetEmitSchedClassCase(unsigned VC,
+                                           std::string const &SCName) const;
+  virtual void
+  subtargetEmitSchedClassProcGuard(unsigned Pi, bool OnlyExpandMCInstPredicates,
+                                   std::string const &ModelName) const;
+  virtual void subtargetEmitPredicates(
+      CodeGenSchedTransition const &T, CodeGenSchedClass const &SC,
+      bool (*IsTruePredicate)(Record const *Rec), int Indent = -1) const;
+  virtual void subtargetEmitProcTransitionEnd() const;
+  virtual void
+  subtargetEmitSchedClassCaseEnd(CodeGenSchedClass const &SC) const;
+  virtual void
+  subtargetEmitSchedModelHelperEpilogue(bool ShouldReturnZero) const;
+  virtual void
+  subtargetEmitGenMCSubtargetInfoClass(std::string const &TargetName,
+                                       bool OverrideGetHwMode) const;
+  virtual void subtargetEmitMCSubtargetInfoImpl(std::string const &TargetName,
+                                                unsigned NumFeatures,
+                                                unsigned NumProcs,
+                                                bool SchedModelHasItin) const;
+  virtual void subtargetEmitIncludeSTIDesc() const;
+  virtual void subtargetEmitDFAPacketizerClass(std::string const &TargetName,
+                                               std::string const &ClassName,
+                                               bool OverrideGetHwMode) const;
+  virtual void subtargetEmitDFAPacketizerClassEnd() const;
+  virtual void subtargetEmitSTICtor() const;
+  virtual void subtargetEmitExternKVArrays(std::string const &TargetName,
+                                           bool SchedModelsHasItin) const;
+  virtual void subtargetEmitClassDefs(std::string const &TargetName,
+                                      std::string const &ClassName,
+                                      unsigned NumFeatures, unsigned NumProcs,
+                                      bool SchedModelsHasItin) const;
+  virtual void
+  subtargetEmitResolveSchedClassHdr(std::string const &ClassName) const;
+  virtual void
+  subtargetEmitResolveSchedClassEnd(std::string const &ClassName) const;
+  virtual void
+  subtargetEmitResolveVariantSchedClass(std::string const &TargetName,
+                                        std::string const &ClassName) const;
+  virtual void subtargetEmitPredicateProlog(const RecordKeeper &Records) const;
+  virtual void subtargetEmitParseFeaturesFunction(
+      std::string const &TargetName,
+      std::vector<Record *> const &Features) const;
+  virtual void
+  subtargetEmitExpandedSTIPreds(StringRef const &TargetName,
+                                std::string const &ClassName,
+                                CodeGenSchedModels const &SchedModels);
+  virtual void subtargetPrepareSchedClassPreds(StringRef const &TargetName,
+                                               bool OnlyExpandMCInstPredicates);
+  virtual void
+  subtargetEmitExpandedSTIPredsMCAnaDecl(StringRef const &TargetName,
+                                         CodeGenSchedModels const &SchedModels);
+  virtual void subtargetEmitExpandedSTIPredsMCAnaDefs(
+      StringRef const &TargetName, std::string const &ClassPrefix,
+      CodeGenSchedModels const &SchedModels) const;
+  virtual void
+  subtargetEmitExpandedSTIPredsHeader(StringRef const &TargetName,
+                                      CodeGenSchedModels const &SchedModels);
+  virtual void
+  subtargetEmitStageAndSycleTables(std::string const &StageTable,
+                                   std::string const &OperandCycleTable,
+                                   std::string const &BypassTable) const;
+  virtual void subtargetEmitDFASubtargetInfoImpl(std::string const &TargetName,
+                                                 std::string const &ClassName,
+                                                 unsigned NumFeatures,
+                                                 unsigned NumProcs,
+                                                 bool SchedModelHasItin) const;
+
+  //---------------------------
+  // Backend: InstrInfoEmitter
+  //---------------------------
+
+  virtual void instrInfoEmitSourceFileHeader() const;
+  virtual void
+  instrInfoPrintDefList(const std::vector<Record *> &Uses, unsigned Num,
+                        std::string (*GetQualifiedName)(Record const *R)) const;
+  virtual void
+  instrInfoEmitOperandInfoTabe(std::vector<std::string> const &OperandInfo,
+                               unsigned N) const;
+  virtual void instrInfoEmitMCInstrDescHdr(std::string TargetName) const;
+  virtual void instrInfoEmitMCInstrDescEnd() const;
+  virtual void instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
+                                   CodeGenInstruction const &Inst, unsigned Num,
+                                   int MinOperands) const;
+  virtual void
+  instrInfoEmitTargetIndepFlags(CodeGenInstruction const &Inst,
+                                bool GetAllowRegisterRenaming) const;
+  virtual void instrInfoEmitTSFFlags(uint64_t Value) const;
+  virtual void instrInfoEmitUseDefsLists(
+      std::map<std::vector<Record *>, unsigned> &EmittedLists,
+      std::vector<Record *> const &UseList,
+      std::vector<Record *> const &DefList) const;
+  virtual void
+  instrInfoEmitOperandInfo(std::vector<std::string> const &OperandInfo,
+                           OperandInfoMapTy const &OpInfo) const;
+  virtual void instrInfoEmitRecordEnd(unsigned InstNum,
+                                      std::string const &InstName) const;
+  virtual void instrInfoEmitStringLiteralDef(
+      std::string const &TargetName,
+      SequenceToOffsetTable<std::string> InstrNames) const;
+  virtual void instrInfoEmitInstrNameIndices(
+      std::string const &TargetName,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+      SequenceToOffsetTable<std::string> const &InstrNames) const;
+  virtual void instrInfoEmitInstrDeprFeatures(
+      std::string const &TargetName, std::string const &TargetNamespace,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
+      SequenceToOffsetTable<std::string> const &InstrNames) const;
+  virtual void instrInfoEmitInstrComplexDeprInfos(
+      std::string const &TargetName,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const;
+  virtual void instrInfoEmitMCInstrInfoInitRoutine(
+      std::string const &TargetName, unsigned NumberedInstrSize,
+      bool HasDeprecationFeatures, bool HasComplexDeprecationInfos) const;
+  virtual void instrInfoEmitClassStruct(std::string const &ClassName) const;
+  virtual void instrInfoEmitTIIHelperMethod(StringRef const &TargetName,
+                                            Record const *Rec,
+                                            bool ExpandDefinition) const;
+  virtual void instrInfoEmitExternArrays(std::string const &TargetName,
+                                         bool HasDeprecationFeatures,
+                                         bool HasComplexDeprecationInfos) const;
+  virtual void instrInfoEmitMCInstrInfoInit(
+      std::string const &TargetName, std::string const &ClassName,
+      unsigned NumberedInstrSize, bool HasDeprecationFeatures,
+      bool HasComplexDeprecationInfos) const;
+  virtual void instrInfoEmitOperandEnum(
+      std::map<std::string, unsigned> const &Operands) const;
+  virtual void instrInfoEmitGetNamedOperandIdx(
+      std::map<std::string, unsigned> const &Operands,
+      OpNameMapTy const &OperandMap) const;
+  virtual void instrInfoEmitOpTypeEnumPartI() const;
+  virtual void instrInfoEmitOpTypeEnumPartII(StringRef const &OpName,
+                                             unsigned EnumVal) const;
+  virtual void instrInfoEmitOpTypeEnumPartIII() const;
+  virtual void instrInfoEmitOpTypeOffsetTable(
+      std::vector<int> OperandOffsets, unsigned OpRecSize,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const;
+  virtual void instrInfoEmitOpcodeOpTypesTable(
+      unsigned EnumVal, std::vector<Record *> const &OperandRecords,
+      std::vector<int> OperandOffsets,
+      ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const;
+  virtual void instrInfoEmitGetOpTypeHdr() const;
+  virtual void instrInfoEmitGetOpTypeReturn() const;
+  virtual void instrInfoEmitGetOpTypeUnreachable() const;
+  virtual void instrInfoEmitGetOpTypeEnd() const;
+  virtual void instrInfoEmitGetMemOpSizeHdr() const;
+  virtual void instrInfoEmitGetOpMemSizeTbl(
+      std::map<int, std::vector<StringRef>> const &SizeToOperandName) const;
+  virtual std::string
+  instrInfoGetInstMapEntry(StringRef const &Namespace,
+                           StringRef const &InstrName) const;
+  virtual void instrInfoEmitGetLogicalOpSizeHdr() const;
+  virtual void instrInfoEmitGetLogicalOpSizeTable(
+      size_t LogicalOpListSize,
+      std::vector<const std::vector<unsigned> *> const &LogicalOpSizeList)
+      const;
+  virtual void instrInfoEmitGetLogicalOpSizeSwitch(
+      std::map<unsigned, std::vector<std::string>> InstMap) const;
+  virtual void instrInfoEmitGetLogicalOpSizeReturn() const;
+  virtual void instrInfoEmitGetLogicalOpSizeEnd() const;
+  virtual void instrInfoEmitGetLogicalOpIdx() const;
+  virtual std::string
+  instrInfoGetOpTypeListEntry(StringRef const &Namespace,
+                              StringRef const &OpName) const;
+  virtual void instrInfoEmitGetLogicalOpTypeHdr() const;
+  virtual void instrInfoEmitGetLogicalOpTypeTable(
+      size_t LogicalOpTypeListSize,
+      std::vector<const std::vector<std::string> *> const &LogicalOpTypeList)
+      const;
+  virtual void instrInfoEmitGetLogicalOpTypeSwitch(
+      std::map<unsigned, std::vector<std::string>> InstMap) const;
+  virtual void instrInfoEmitGetLogicalOpTypeReturn() const;
+  virtual void instrInfoEmitGetLogicalOpTypeEnd() const;
+  virtual void instrInfoEmitDeclareMCInstFeatureClasses() const;
+  virtual void instrInfoEmitPredFcnDecl(RecVec const &TIIPredicates) const;
+  virtual void instrInfoEmitPredFcnImpl(StringRef const &TargetName,
+                                        RecVec const &TIIPredicates);
+  virtual void instrInfoEmitInstrPredVerifierIncludes() const;
+  virtual void instrInfoEmitSubtargetFeatureBitEnumeration(
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
+          &SubtargetFeatures) const;
+  virtual void instrInfoEmitEmitSTFNameTable(
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
+          &SubtargetFeatures) const;
+  virtual void instrInfoEmitFeatureBitsEnum(
+      std::vector<std::vector<Record *>> const &FeatureBitsets) const;
+  virtual void instrInfoEmitFeatureBitsArray(
+      std::vector<std::vector<Record *>> const &FeatureBitsets,
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+          &SubtargetFeatures) const;
+  virtual void instrInfoEmitPredVerifier(
+      std::vector<std::vector<Record *>> const &FeatureBitsets,
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+          &SubtargetFeatures,
+      CodeGenTarget const &Target) const;
+  virtual void instrInfoEmitEnums(CodeGenTarget const &Target,
+                                  StringRef const &Namespace,
+                                  CodeGenSchedModels const &SchedModels) const;
+  virtual void instrInfoEmitTIIPredicates(StringRef const &TargetName,
+                                          RecVec const &TIIPredicates,
+                                          bool ExpandDefinition);
+  virtual void instrInfoEmitComputeAssemblerAvailableFeatures(
+      StringRef const &TargetName,
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
+          &SubtargetFeatures) const;
 };
 
 //==============================
@@ -422,7 +772,8 @@ public:
   void emitNamespace(std::string const &Name, bool Begin,
                      std::string const &Comment) const override;
   void emitIncludeToggle(std::string const &Name, bool Begin,
-                         bool Newline = true) const override;
+                         bool Newline = true,
+                         bool UndefAtEnd = false) const override;
 
   //------------------------
   // Backend: RegisterInfo

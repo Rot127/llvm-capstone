@@ -42,7 +42,8 @@ void PrinterCapstone::emitNamespace(std::string const &Name, bool Begin,
 /// `#endif // <Name>`
 /// Used to control inclusion of a code block via a macro definition.
 void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
-                                        bool Newline) const {
+                                        bool Newline,
+                                        bool UndefAtEnd) const {
   if (Name == "GET_REGINFO_TARGET_DESC" || Name == "GET_REGINFO_HEADER") {
     return;
   }

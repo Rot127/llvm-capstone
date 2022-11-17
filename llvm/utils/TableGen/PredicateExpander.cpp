@@ -15,12 +15,12 @@
 
 namespace llvm {
 
-void PredicateExpander::expandTrue(raw_ostream &OS) { OS << "true"; }
-void PredicateExpander::expandFalse(raw_ostream &OS) { OS << "false"; }
+void PredicateExpanderLLVM::expandTrue(raw_ostream &OS) { OS << "true"; }
+void PredicateExpanderLLVM::expandFalse(raw_ostream &OS) { OS << "false"; }
 
-void PredicateExpander::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
-                                              int ImmVal,
-                                              StringRef FunctionMapper) {
+void PredicateExpanderLLVM::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
+                                                  int ImmVal,
+                                                  StringRef FunctionMapper) {
   if (!FunctionMapper.empty())
     OS << FunctionMapper << "(";
   OS << "MI" << (isByRef() ? "." : "->") << "getOperand(" << OpIndex
@@ -30,9 +30,9 @@ void PredicateExpander::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
   OS << (shouldNegate() ? " != " : " == ") << ImmVal;
 }
 
-void PredicateExpander::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
-                                              StringRef ImmVal,
-                                              StringRef FunctionMapper) {
+void PredicateExpanderLLVM::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
+                                                  StringRef ImmVal,
+                                                  StringRef FunctionMapper) {
   if (ImmVal.empty())
     expandCheckImmOperandSimple(OS, OpIndex, FunctionMapper);
 
@@ -45,9 +45,8 @@ void PredicateExpander::expandCheckImmOperand(raw_ostream &OS, int OpIndex,
   OS << (shouldNegate() ? " != " : " == ") << ImmVal;
 }
 
-void PredicateExpander::expandCheckImmOperandSimple(raw_ostream &OS,
-                                                    int OpIndex,
-                                                    StringRef FunctionMapper) {
+void PredicateExpanderLLVM::expandCheckImmOperandSimple(
+    raw_ostream &OS, int OpIndex, StringRef FunctionMapper) {
   if (shouldNegate())
     OS << "!";
   if (!FunctionMapper.empty())
@@ -58,9 +57,9 @@ void PredicateExpander::expandCheckImmOperandSimple(raw_ostream &OS,
     OS << ")";
 }
 
-void PredicateExpander::expandCheckRegOperand(raw_ostream &OS, int OpIndex,
-                                              const Record *Reg,
-                                              StringRef FunctionMapper) {
+void PredicateExpanderLLVM::expandCheckRegOperand(raw_ostream &OS, int OpIndex,
+                                                  const Record *Reg,
+                                                  StringRef FunctionMapper) {
   assert(Reg->isSubClassOf("Register") && "Expected a register Record!");
 
   if (!FunctionMapper.empty())
@@ -76,10 +75,8 @@ void PredicateExpander::expandCheckRegOperand(raw_ostream &OS, int OpIndex,
   OS << Reg->getName();
 }
 
-
-void PredicateExpander::expandCheckRegOperandSimple(raw_ostream &OS,
-                                                    int OpIndex,
-                                                    StringRef FunctionMapper) {
+void PredicateExpanderLLVM::expandCheckRegOperandSimple(
+    raw_ostream &OS, int OpIndex, StringRef FunctionMapper) {
   if (shouldNegate())
     OS << "!";
   if (!FunctionMapper.empty())
@@ -90,32 +87,34 @@ void PredicateExpander::expandCheckRegOperandSimple(raw_ostream &OS,
     OS << ")";
 }
 
-void PredicateExpander::expandCheckInvalidRegOperand(raw_ostream &OS,
-                                                     int OpIndex) {
+void PredicateExpanderLLVM::expandCheckInvalidRegOperand(raw_ostream &OS,
+                                                         int OpIndex) {
   OS << "MI" << (isByRef() ? "." : "->") << "getOperand(" << OpIndex
      << ").getReg() " << (shouldNegate() ? "!= " : "== ") << "0";
 }
 
-void PredicateExpander::expandCheckSameRegOperand(raw_ostream &OS, int First,
-                                                  int Second) {
+void PredicateExpanderLLVM::expandCheckSameRegOperand(raw_ostream &OS,
+                                                      int First, int Second) {
   OS << "MI" << (isByRef() ? "." : "->") << "getOperand(" << First
      << ").getReg() " << (shouldNegate() ? "!=" : "==") << " MI"
      << (isByRef() ? "." : "->") << "getOperand(" << Second << ").getReg()";
 }
 
-void PredicateExpander::expandCheckNumOperands(raw_ostream &OS, int NumOps) {
+void PredicateExpanderLLVM::expandCheckNumOperands(raw_ostream &OS,
+                                                   int NumOps) {
   OS << "MI" << (isByRef() ? "." : "->") << "getNumOperands() "
      << (shouldNegate() ? "!= " : "== ") << NumOps;
 }
 
-void PredicateExpander::expandCheckOpcode(raw_ostream &OS, const Record *Inst) {
+void PredicateExpanderLLVM::expandCheckOpcode(raw_ostream &OS,
+                                              const Record *Inst) {
   OS << "MI" << (isByRef() ? "." : "->") << "getOpcode() "
      << (shouldNegate() ? "!= " : "== ") << Inst->getValueAsString("Namespace")
      << "::" << Inst->getName();
 }
 
-void PredicateExpander::expandCheckOpcode(raw_ostream &OS,
-                                          const RecVec &Opcodes) {
+void PredicateExpanderLLVM::expandCheckOpcode(raw_ostream &OS,
+                                              const RecVec &Opcodes) {
   assert(!Opcodes.empty() && "Expected at least one opcode to check!");
   bool First = true;
 
@@ -144,17 +143,17 @@ void PredicateExpander::expandCheckOpcode(raw_ostream &OS,
   OS << ')';
 }
 
-void PredicateExpander::expandCheckPseudo(raw_ostream &OS,
-                                          const RecVec &Opcodes) {
+void PredicateExpanderLLVM::expandCheckPseudo(raw_ostream &OS,
+                                              const RecVec &Opcodes) {
   if (shouldExpandForMC())
     expandFalse(OS);
   else
     expandCheckOpcode(OS, Opcodes);
 }
 
-void PredicateExpander::expandPredicateSequence(raw_ostream &OS,
-                                                const RecVec &Sequence,
-                                                bool IsCheckAll) {
+void PredicateExpanderLLVM::expandPredicateSequence(raw_ostream &OS,
+                                                    const RecVec &Sequence,
+                                                    bool IsCheckAll) {
   assert(!Sequence.empty() && "Found an invalid empty predicate set!");
   if (Sequence.size() == 1)
     return expandPredicate(OS, Sequence[0]);
@@ -181,24 +180,26 @@ void PredicateExpander::expandPredicateSequence(raw_ostream &OS,
   setNegatePredicate(OldValue);
 }
 
-void PredicateExpander::expandTIIFunctionCall(raw_ostream &OS,
-                                              StringRef MethodName) {
+void PredicateExpanderLLVM::expandTIIFunctionCall(raw_ostream &OS,
+                                                  StringRef MethodName) {
   OS << (shouldNegate() ? "!" : "");
   OS << TargetName << (shouldExpandForMC() ? "_MC::" : "InstrInfo::");
   OS << MethodName << (isByRef() ? "(MI)" : "(*MI)");
 }
 
-void PredicateExpander::expandCheckIsRegOperand(raw_ostream &OS, int OpIndex) {
+void PredicateExpanderLLVM::expandCheckIsRegOperand(raw_ostream &OS,
+                                                    int OpIndex) {
   OS << (shouldNegate() ? "!" : "") << "MI" << (isByRef() ? "." : "->")
      << "getOperand(" << OpIndex << ").isReg() ";
 }
 
-void PredicateExpander::expandCheckIsImmOperand(raw_ostream &OS, int OpIndex) {
+void PredicateExpanderLLVM::expandCheckIsImmOperand(raw_ostream &OS,
+                                                    int OpIndex) {
   OS << (shouldNegate() ? "!" : "") << "MI" << (isByRef() ? "." : "->")
      << "getOperand(" << OpIndex << ").isImm() ";
 }
 
-void PredicateExpander::expandCheckFunctionPredicateWithTII(
+void PredicateExpanderLLVM::expandCheckFunctionPredicateWithTII(
     raw_ostream &OS, StringRef MCInstFn, StringRef MachineInstrFn,
     StringRef TIIPtr) {
   if (!shouldExpandForMC()) {
@@ -210,23 +211,22 @@ void PredicateExpander::expandCheckFunctionPredicateWithTII(
   OS << MCInstFn << (isByRef() ? "(MI" : "(*MI") << ", MCII)";
 }
 
-void PredicateExpander::expandCheckFunctionPredicate(raw_ostream &OS,
-                                                     StringRef MCInstFn,
-                                                     StringRef MachineInstrFn) {
+void PredicateExpanderLLVM::expandCheckFunctionPredicate(
+    raw_ostream &OS, StringRef MCInstFn, StringRef MachineInstrFn) {
   OS << (shouldExpandForMC() ? MCInstFn : MachineInstrFn)
      << (isByRef() ? "(MI)" : "(*MI)");
 }
 
-void PredicateExpander::expandCheckNonPortable(raw_ostream &OS,
-                                               StringRef Code) {
+void PredicateExpanderLLVM::expandCheckNonPortable(raw_ostream &OS,
+                                                   StringRef Code) {
   if (shouldExpandForMC())
     return expandFalse(OS);
 
   OS << '(' << Code << ')';
 }
 
-void PredicateExpander::expandReturnStatement(raw_ostream &OS,
-                                              const Record *Rec) {
+void PredicateExpanderLLVM::expandReturnStatement(raw_ostream &OS,
+                                                  const Record *Rec) {
   std::string Buffer;
   raw_string_ostream SS(Buffer);
 
@@ -236,8 +236,8 @@ void PredicateExpander::expandReturnStatement(raw_ostream &OS,
   OS << Buffer;
 }
 
-void PredicateExpander::expandOpcodeSwitchCase(raw_ostream &OS,
-                                               const Record *Rec) {
+void PredicateExpanderLLVM::expandOpcodeSwitchCase(raw_ostream &OS,
+                                                   const Record *Rec) {
   const RecVec &Opcodes = Rec->getValueAsListOfDefs("Opcodes");
   for (const Record *Opcode : Opcodes) {
     OS.indent(getIndentLevel() * 2);
@@ -251,9 +251,9 @@ void PredicateExpander::expandOpcodeSwitchCase(raw_ostream &OS,
   decreaseIndentLevel();
 }
 
-void PredicateExpander::expandOpcodeSwitchStatement(raw_ostream &OS,
-                                                    const RecVec &Cases,
-                                                    const Record *Default) {
+void PredicateExpanderLLVM::expandOpcodeSwitchStatement(raw_ostream &OS,
+                                                        const RecVec &Cases,
+                                                        const Record *Default) {
   std::string Buffer;
   raw_string_ostream SS(Buffer);
 
@@ -278,7 +278,8 @@ void PredicateExpander::expandOpcodeSwitchStatement(raw_ostream &OS,
   OS << Buffer;
 }
 
-void PredicateExpander::expandStatement(raw_ostream &OS, const Record *Rec) {
+void PredicateExpanderLLVM::expandStatement(raw_ostream &OS,
+                                            const Record *Rec) {
   // Assume that padding has been added by the caller.
   if (Rec->isSubClassOf("MCOpcodeSwitchStatement")) {
     expandOpcodeSwitchStatement(OS, Rec->getValueAsListOfDefs("Cases"),
@@ -294,7 +295,8 @@ void PredicateExpander::expandStatement(raw_ostream &OS, const Record *Rec) {
   llvm_unreachable("No known rules to expand this MCStatement");
 }
 
-void PredicateExpander::expandPredicate(raw_ostream &OS, const Record *Rec) {
+void PredicateExpanderLLVM::expandPredicate(raw_ostream &OS,
+                                            const Record *Rec) {
   // Assume that padding has been added by the caller.
   if (Rec->isSubClassOf("MCTrue")) {
     if (shouldNegate())
@@ -390,8 +392,8 @@ void PredicateExpander::expandPredicate(raw_ostream &OS, const Record *Rec) {
   llvm_unreachable("No known rules to expand this MCInstPredicate");
 }
 
-void STIPredicateExpander::expandHeader(raw_ostream &OS,
-                                        const STIPredicateFunction &Fn) {
+void PredicateExpanderLLVM::expandHeader(raw_ostream &OS,
+                                         const STIPredicateFunction &Fn) {
   const Record *Rec = Fn.getDeclaration();
   StringRef FunctionName = Rec->getValueAsString("Name");
 
@@ -417,8 +419,8 @@ void STIPredicateExpander::expandHeader(raw_ostream &OS,
   OS << ";\n";
 }
 
-void STIPredicateExpander::expandPrologue(raw_ostream &OS,
-                                          const STIPredicateFunction &Fn) {
+void PredicateExpanderLLVM::expandPrologue(raw_ostream &OS,
+                                           const STIPredicateFunction &Fn) {
   RecVec Delegates = Fn.getDeclaration()->getValueAsListOfDefs("Delegates");
   bool UpdatesOpcodeMask =
       Fn.getDeclaration()->getValueAsBit("UpdatesOpcodeMask");
@@ -444,8 +446,9 @@ void STIPredicateExpander::expandPrologue(raw_ostream &OS,
   OS << "unsigned ProcessorID = getSchedModel().getProcessorID();\n";
 }
 
-void STIPredicateExpander::expandOpcodeGroup(raw_ostream &OS, const OpcodeGroup &Group,
-                                             bool ShouldUpdateOpcodeMask) {
+void PredicateExpanderLLVM::expandOpcodeGroup(raw_ostream &OS,
+                                              const OpcodeGroup &Group,
+                                              bool ShouldUpdateOpcodeMask) {
   const OpcodeInfo &OI = Group.getOpcodeInfo();
   for (const PredicateInfo &PI : OI.getPredicates()) {
     const APInt &ProcModelMask = PI.ProcModelMask;
@@ -483,8 +486,8 @@ void STIPredicateExpander::expandOpcodeGroup(raw_ostream &OS, const OpcodeGroup 
   }
 }
 
-void STIPredicateExpander::expandBody(raw_ostream &OS,
-                                      const STIPredicateFunction &Fn) {
+void PredicateExpanderLLVM::expandBody(raw_ostream &OS,
+                                       const STIPredicateFunction &Fn) {
   bool UpdatesOpcodeMask =
       Fn.getDeclaration()->getValueAsBit("UpdatesOpcodeMask");
 
@@ -516,8 +519,8 @@ void STIPredicateExpander::expandBody(raw_ostream &OS,
   OS << "}\n";
 }
 
-void STIPredicateExpander::expandEpilogue(raw_ostream &OS,
-                                          const STIPredicateFunction &Fn) {
+void PredicateExpanderLLVM::expandEpilogue(raw_ostream &OS,
+                                           const STIPredicateFunction &Fn) {
   OS << '\n';
   OS.indent(getIndentLevel() * 2);
   OS << "return ";
@@ -530,8 +533,8 @@ void STIPredicateExpander::expandEpilogue(raw_ostream &OS,
   OS << "} // " << ClassPrefix << "::" << FunctionName << "\n\n";
 }
 
-void STIPredicateExpander::expandSTIPredicate(raw_ostream &OS,
-                                              const STIPredicateFunction &Fn) {
+void PredicateExpanderLLVM::expandSTIPredicate(raw_ostream &OS,
+                                               const STIPredicateFunction &Fn) {
   const Record *Rec = Fn.getDeclaration();
   if (shouldExpandForMC() && !Rec->getValueAsBit("ExpandForMC"))
     return;
