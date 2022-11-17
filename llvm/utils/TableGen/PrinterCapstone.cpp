@@ -15,6 +15,15 @@
 #include "llvm/TableGen/TableGenBackend.h"
 #include <regex>
 
+static void emitDefaultSourceFileHeader(formatted_raw_ostream &OS) {
+  OS << "/* Capstone Disassembly Engine, http://www.capstone-engine.org */\n";
+  OS << "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2022, */\n";
+  OS << "/*    Rot127 <unisono@quyllur.org> 2022 */\n";
+  OS << "/* Automatically generated file by the LLVM TableGen Disassembler "
+        "Backend. */\n";
+  OS << "/* Do not edit. */\n\n";
+}
+
 namespace llvm {
 
 /// Prints `namespace <name> {` and `} // end namespace <name>` to the output
@@ -32,17 +41,16 @@ void PrinterCapstone::emitNamespace(std::string const &Name, bool Begin,
 /// and
 /// `#endif // <Name>`
 /// Used to control inclusion of a code block via a macro definition.
-void PrinterCapstone::emitIncludeToggle(std::string const &Name,
-                                        bool Begin, bool Newline) const {
-  if (Name == "GET_REGINFO_TARGET_DESC" ||
-      Name == "GET_REGINFO_HEADER") { 
+void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
+                                        bool Newline) const {
+  if (Name == "GET_REGINFO_TARGET_DESC" || Name == "GET_REGINFO_HEADER") {
     return;
   }
   if (Begin) {
     OS << "\n#ifdef " << Name << "\n";
     OS << "#undef " << Name << "\n\n";
   } else {
-    OS << "#endif // " << Name << "\n\n";
+    OS << "#endif // " << Name << (Newline ? "\n\n" : "\n");
   }
 }
 
@@ -53,12 +61,7 @@ void PrinterCapstone::regInfoEmitSourceFileHeader(
     // Only emit it once at the beginning.
     return;
   }
-  OS << "/* Capstone Disassembly Engine, http://www.capstone-engine.org */\n";
-  OS << "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2022, */\n";
-  OS << "/*    Rot127 <unisono@quyllur.org> 2022 */\n";
-  OS << "/* Automatically generated file by the LLVM TableGen Disassembler "
-        "Backend. */\n";
-  OS << "/* Do not edit. */\n\n";
+  emitDefaultSourceFileHeader(OS);
   ++Count;
 }
 
@@ -76,7 +79,8 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
   OS << "enum {\n  " << TargetName << "_NoRegister,\n";
 
   for (const auto &Reg : Registers)
-    OS << "  " << TargetName << "_" << Reg.getName() << " = " << Reg.EnumValue << ",\n";
+    OS << "  " << TargetName << "_" << Reg.getName() << " = " << Reg.EnumValue
+       << ",\n";
   assert(Registers.size() == Registers.back().EnumValue &&
          "Register enum value mismatch!");
   OS << "  NUM_TARGET_REGS // " << Registers.size() + 1 << "\n";
@@ -105,7 +109,8 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
     OS << "\n// Register alternate name indices\n\n";
     OS << "enum {\n";
     for (unsigned I = 0, E = RegAltNameIndices.size(); I != E; ++I)
-      OS << "  " << TargetName << "_" << RegAltNameIndices[I]->getName() << ",\t// " << I << "\n";
+      OS << "  " << TargetName << "_" << RegAltNameIndices[I]->getName()
+         << ",\t// " << I << "\n";
     OS << "  NUM_TARGET_REG_ALT_NAMES = " << RegAltNameIndices.size() << "\n";
     OS << "};\n";
   }
@@ -117,7 +122,8 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
     OS << "enum {\n  " << TargetName << "_NoSubRegister,\n";
     unsigned I = 0;
     for (const auto &Idx : SubRegIndices)
-      OS << "  " << TargetName << "_" << Idx.getName() << ",\t// " << ++I << "\n";
+      OS << "  " << TargetName << "_" << Idx.getName() << ",\t// " << ++I
+         << "\n";
     OS << "  " << TargetName << "_NUM_TARGET_SUBREGS\n};\n";
   }
   emitIncludeToggle("GET_REGINFO_ENUM", false);
@@ -191,7 +197,6 @@ void PrinterCapstone::regInfoEmitRegUnitRoots(
     std::string const TargetName, CodeGenRegBank const &RegBank) const {
   return;
 }
-
 
 static std::string getQualifiedNameCCS(CodeGenRegisterClass const &RC) {
   if (RC.Namespace.empty())
@@ -308,19 +313,16 @@ void PrinterCapstone::regInfoEmitInfoRegMapping(StringRef const &Namespace,
   return;
 }
 
-void PrinterCapstone::regInfoEmitHeaderIncludes() const {
-  return;
-}
+void PrinterCapstone::regInfoEmitHeaderIncludes() const { return; }
 
 void PrinterCapstone::regInfoEmitHeaderExternRegClasses(
     std::list<CodeGenRegisterClass> const &RegClasses) const {
   return;
 }
 
-void PrinterCapstone::regInfoEmitHeaderDecl(std::string const &TargetName,
-                                            std::string const &ClassName,
-                                            bool SubRegsPresent,
-                                            bool DeclareGetPhysRegBaseClass) const {
+void PrinterCapstone::regInfoEmitHeaderDecl(
+    std::string const &TargetName, std::string const &ClassName,
+    bool SubRegsPresent, bool DeclareGetPhysRegBaseClass) const {
   return;
 }
 
@@ -1078,12 +1080,7 @@ void PrinterCapstone::decoderEmitterEmitIncludes() const {
 }
 
 void PrinterCapstone::decoderEmitterEmitSourceFileHeader() const {
-  OS << "/* Capstone Disassembly Engine, http://www.capstone-engine.org */\n";
-  OS << "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2022, */\n";
-  OS << "/*    Rot127 <unisono@quyllur.org> 2022 */\n";
-  OS << "/* Automatically generated file by the LLVM TableGen Disassembler "
-        "Backend. */\n";
-  OS << "/* Do not edit. */\n\n";
+  emitDefaultSourceFileHeader(OS);
 }
 
 //-------------------------
@@ -1091,16 +1088,17 @@ void PrinterCapstone::decoderEmitterEmitSourceFileHeader() const {
 //-------------------------
 
 void PrinterCapstone::asmWriterEmitSourceFileHeader() const {
-  emitSourceFileHeader("Assembly Writer Source Fragment", OS);
+  emitDefaultSourceFileHeader(OS);
+  OS << "#include <capstone/platform.h>"
+     << "#include <assert.h>";
 }
 
-void PrinterCapstone::asmWriterEmitGetMnemonic(std::string const &TargetName,
-                                           StringRef const &ClassName) const {
+void PrinterCapstone::asmWriterEmitGetMnemonic(
+    std::string const &TargetName, StringRef const &ClassName) const {
   OS << "/// getMnemonic - This method is automatically generated by "
         "tablegen\n"
         "/// from the instruction set description.\n"
-        "std::pair<const char *, uint64_t> "
-     << TargetName << ClassName << "::getMnemonic(const MCInst *MI) {\n";
+        "std::pair<const char *, uint64_t> getMnemonic(MCInst *MI) {\n";
 }
 
 void PrinterCapstone::asmWriterEmitAsmStrs(
@@ -1169,18 +1167,17 @@ void PrinterCapstone::asmWriterEmitPrintInstruction(
         "tablegen\n"
         "/// from the instruction set description.\n"
         "LLVM_NO_PROFILE_INSTRUMENT_FUNCTION\n"
-        "void "
-     << TargetName << ClassName
-     << "::printInstruction(const MCInst *MI, uint64_t Address, "
+        "static void "
+     << "printInstruction(const MCInst *MI, uint64_t Address, "
      << (PassSubtarget ? "const MCSubtargetInfo &STI, " : "")
-     << "raw_ostream &O) {\n";
+     << "SStream *O) {\n";
 
   // Emit the initial tab character.
-  OS << "  O << \"\\t\";\n\n";
+  OS << "   SStream_concat0(O, \"\\t\";\n\n)";
 
   // Emit the starting string.
   OS << "  auto MnemonicInfo = getMnemonic(MI);\n\n";
-  OS << "  O << MnemonicInfo.first;\n\n";
+  OS << "  SStream_concat0(O, MnemonicInfo.first);\n\n";
 
   OS << "  uint" << ((BitsLeft < (OpcodeInfoBits - 32)) ? 64 : 32)
      << "_t Bits = MnemonicInfo.second;\n"
@@ -1251,8 +1248,9 @@ void PrinterCapstone::asmWriterEmitInstrSwitch() const {
   OS << "  default: llvm_unreachable(\"Unexpected opcode.\");\n";
 }
 
-void PrinterCapstone::asmWriterEmitCompoundClosure(unsigned Indent, bool Newline,
-                                               bool Semicolon) const {
+void PrinterCapstone::asmWriterEmitCompoundClosure(unsigned Indent,
+                                                   bool Newline,
+                                                   bool Semicolon) const {
   for (; Indent > 0; --Indent) {
     OS << " ";
   }
@@ -1302,10 +1300,9 @@ void PrinterCapstone::asmWriterEmitInstruction(
   OS << "    break;\n";
 }
 
-void PrinterCapstone::asmWriterEmitGetRegNameAssert(std::string const &TargetName,
-                                                StringRef const &ClassName,
-                                                bool HasAltNames,
-                                                unsigned RegSize) const {
+void PrinterCapstone::asmWriterEmitGetRegNameAssert(
+    std::string const &TargetName, StringRef const &ClassName, bool HasAltNames,
+    unsigned RegSize) const {
 
   OS << "\n\n/// getRegisterName - This method is automatically generated by "
         "tblgen\n"
@@ -1441,10 +1438,10 @@ char const *PrinterCapstone::asmWriterGetOpcodeFormat() const {
 void PrinterCapstone::asmWriterEmitPrintAliasInstrHeader(
     std::string const &TargetName, StringRef const &ClassName,
     bool PassSubtarget) const {
-  OS << "bool " << TargetName << ClassName << "::printAliasInstr(const MCInst"
+  OS << "static bool printAliasInstr(const MCInst"
      << " *MI, uint64_t Address, "
      << (PassSubtarget ? "const MCSubtargetInfo &STI, " : "")
-     << "raw_ostream &OS) {\n";
+     << "SStream *OS) {\n";
 }
 
 void PrinterCapstone::asmWriterEmitPrintAliasInstrBodyRetFalse() const {
@@ -1453,7 +1450,7 @@ void PrinterCapstone::asmWriterEmitPrintAliasInstrBodyRetFalse() const {
 }
 
 void PrinterCapstone::asmWriterEmitDeclValid(std::string const &TargetName,
-                                         StringRef const &ClassName) const {
+                                             StringRef const &ClassName) const {
   OS << "static bool " << TargetName << ClassName
      << "ValidateMCOperand(const MCOperand &MCOp,\n"
      << "                  const MCSubtargetInfo &STI,\n"
@@ -1556,12 +1553,11 @@ void PrinterCapstone::asmWriterEmitPrintAliasOp(
     std::string const &TargetName, StringRef const &ClassName,
     std::vector<std::pair<std::string, bool>> const &PrintMethods,
     bool PassSubtarget) const {
-  OS << "void " << TargetName << ClassName << "::"
-     << "printCustomAliasOperand(\n"
+  OS << "static void printCustomAliasOperand(\n"
      << "         const MCInst *MI, uint64_t Address, unsigned OpIdx,\n"
      << "         unsigned PrintMethodIdx,\n"
      << (PassSubtarget ? "         const MCSubtargetInfo &STI,\n" : "")
-     << "         raw_ostream &OS) {\n";
+     << "         SStream *OS) {\n";
   if (PrintMethods.empty())
     OS << "  llvm_unreachable(\"Unknown PrintMethod kind\");\n";
   else {

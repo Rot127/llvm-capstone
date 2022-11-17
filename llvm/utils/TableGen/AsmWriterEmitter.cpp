@@ -990,6 +990,8 @@ void EmitAsmWriter(RecordKeeper &RK, raw_ostream &OS) {
   formatted_raw_ostream FOS(OS);
   if (PL == PRINTER_LANG_CPP) {
     PI = new PrinterLLVM(FOS);
+  } else if (PL == PRINTER_LANG_CAPSTONE_C) {
+    PI = new PrinterCapstone(FOS);
   } else {
     llvm_unreachable("AsmWriterEmitter does not support the given output language.");
   }

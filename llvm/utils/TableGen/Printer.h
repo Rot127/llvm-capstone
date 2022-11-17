@@ -661,7 +661,8 @@ public:
                                 bool PassSubtarget) const override;
   void asmWriterEmitGetRegNameAssert(std::string const &TargetName,
                                      StringRef const &ClassName,
-                                     bool HasAltNames, unsigned RegSize) const override;
+                                     bool HasAltNames,
+                                     unsigned RegSize) const override;
   void asmWriterEmitStringLiteralDef(
       SequenceToOffsetTable<std::string> const &StringTable,
       StringRef const &AltName) const override;
@@ -703,10 +704,9 @@ public:
       std::string const &TargetName, StringRef const &ClassName,
       std::vector<std::pair<std::string, bool>> const &PrintMethods,
       bool PassSubtarget) const override;
-  void
-  asmWriterEmitPrintMC(std::string const &TargetName,
-                       StringRef const &ClassName,
-                       std::vector<const Record *> const &MCOpPredicates) const override;
+  void asmWriterEmitPrintMC(
+      std::string const &TargetName, StringRef const &ClassName,
+      std::vector<const Record *> const &MCOpPredicates) const override;
 };
 
 } // end namespace llvm
