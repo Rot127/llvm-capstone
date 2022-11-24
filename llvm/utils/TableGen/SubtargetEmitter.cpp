@@ -1241,6 +1241,9 @@ void EmitSubtarget(RecordKeeper &RK, raw_ostream &OS) {
   case PRINTER_LANG_CPP:
     PI = new PrinterLLVM(FOS);
     break;
+  case PRINTER_LANG_CAPSTONE_C:
+    PI = new PrinterCapstone(FOS);
+    break;
   }
   SubtargetEmitter(RK, CGTarget, *PI).run();
   delete PI;

@@ -800,6 +800,8 @@ void EmitInstrInfo(RecordKeeper &RK, raw_ostream &OS) {
 
   if (PL == PRINTER_LANG_CPP) {
     PI = new PrinterLLVM(FOS);
+  } else if (PL == PRINTER_LANG_CAPSTONE_C) {
+    PI = new PrinterCapstone(FOS);
   } else {
     llvm_unreachable("InstrInfoEmitter does not support the given output language.");
   }
