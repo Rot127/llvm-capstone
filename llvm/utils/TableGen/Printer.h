@@ -520,6 +520,35 @@ public:
   void regInfoEmitComposeSubRegIdxLaneMaskRev(
       std::string const &ClName,
       std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+
+  //-------------------------
+  // Backend: DecoderEmitter
+  //-------------------------
+
+  void decoderEmitterEmitOpDecoder(raw_ostream &DecoderOS,
+                                   const OperandInfo &Op) const override;
+  void
+  decoderEmitterEmitOpBinaryParser(raw_ostream &DecoderOS,
+                                   const OperandInfo &OpInfo) const override;
+  bool decoderEmitterEmitPredicateMatchAux(const Init &Val, bool ParenIfBinOp,
+                                           raw_ostream &OS) const override;
+  bool decoderEmitterEmitPredicateMatch(raw_ostream &PredOS,
+                                        const ListInit *Predicates,
+                                        unsigned Opc) const override;
+  void decoderEmitterEmitFieldFromInstruction() const override;
+  void decoderEmitterEmitInsertBits() const override;
+  void decoderEmitterEmitDecodeInstruction(bool IsVarLenInst) const override;
+  void decoderEmitterEmitTable(
+      DecoderTable &Table, unsigned BitWidth, StringRef Namespace,
+      std::vector<EncodingAndInst> &NumberedEncodings) const override;
+  void decoderEmitterEmitInstrLenTable(
+      std::vector<unsigned> &InstrLen) const override;
+  void decoderEmitterEmitPredicateFunction(PredicateSet &Predicates,
+                                           unsigned Indentation) const override;
+  void decoderEmitterEmitDecoderFunction(DecoderSet &Decoders,
+                                         unsigned Indentation) const override;
+  void decoderEmitterEmitIncludes() const override;
+  void decoderEmitterEmitSourceFileHeader() const override;
 };
 
 } // end namespace llvm

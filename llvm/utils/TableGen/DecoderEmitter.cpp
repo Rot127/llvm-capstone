@@ -2054,6 +2054,11 @@ static void setPrinterParameters(CodeGenTarget &Target, PrinterLanguage PL,
       L = "  MCDisassembler::DecodeStatus S = "
           "MCDisassembler::Success;\n(void)S;";
       break;
+    case llvm::PRINTER_LANG_CAPSTONE_C:
+      GPrefix = "if (!Check(&S, ";
+      L = "  MCDisassembler_DecodeStatus S = "
+          "MCDisassembler_Success;\n(void)S;";
+      break;
     }
     GPostfix = "))";
   } else {

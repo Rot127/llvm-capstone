@@ -12,6 +12,7 @@
 
 #include "Printer.h"
 #include "llvm/TableGen/TableGenBackend.h"
+#include <regex>
 
 namespace llvm {
 
@@ -526,6 +527,562 @@ void PrinterCapstone::regInfoEmitComposeSubRegIdxLaneMaskRev(
     std::string const &ClName,
     std::deque<CodeGenSubRegIndex> const &SubRegIndices) const {
   return;
+}
+
+static std::string resolveTemplateDecoder(OperandInfo const &Op) {
+  unsigned const B = Op.Decoder.find_first_of("<");
+  unsigned const E = Op.Decoder.find(">");
+  std::string const &DecName = Op.Decoder.substr(0, B);
+  std::string Args = Op.Decoder.substr(B + 1, E - B - 1);
+  std::string Decoder =
+      DecName + "_" + std::regex_replace(Args, std::regex("\\s*,\\s*"), "_");
+  PrintNote("DEFINE_" + DecName + "(" + Decoder + ", " + Args + ")");
+  return Decoder;
+}
+
+void PrinterCapstone::decoderEmitterEmitOpDecoder(raw_ostream &DecoderOS,
+                                                  const OperandInfo &Op) const {
+  unsigned const Indent = 4;
+  DecoderOS.indent(Indent) << GuardPrefix;
+  if (Op.Decoder.find("<") != std::string::npos) {
+    DecoderOS << resolveTemplateDecoder(Op);
+  } else {
+    DecoderOS << Op.Decoder;
+  }
+
+  DecoderOS << "(MI, insn, Address, Decoder)" << GuardPostfix << " { "
+            << (Op.HasCompleteDecoder ? "" : "DecodeComplete = false; ")
+            << "return " << ReturnFail << "; } \\\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitOpBinaryParser(
+    raw_ostream &DecOS, const OperandInfo &OpInfo) const {
+  unsigned const Indent = 4;
+  const std::string &Decoder = (OpInfo.Decoder.find("<") != std::string::npos)
+                                   ? resolveTemplateDecoder(OpInfo)
+                                   : OpInfo.Decoder;
+
+  bool const UseInsertBits = OpInfo.numFields() != 1 || OpInfo.InitValue != 0;
+
+  if (UseInsertBits) {
+    DecOS.indent(Indent) << "tmp = ";
+    DecOS.write_hex(OpInfo.InitValue);
+    DecOS << "; \\\n";
+  }
+
+  for (const EncodingField &EF : OpInfo) {
+    DecOS.indent(Indent);
+    if (UseInsertBits)
+      DecOS << "tmp |= ";
+    else
+      DecOS << "tmp = ";
+    DecOS << "fieldname(insn, " << EF.Base << ", " << EF.Width << ')';
+    if (UseInsertBits)
+      DecOS << " << " << EF.Offset;
+    else if (EF.Offset != 0)
+      DecOS << " << " << EF.Offset;
+    DecOS << "; \\\n";
+  }
+
+  if (Decoder != "") {
+    DecOS.indent(Indent) << GuardPrefix << Decoder
+                         << "(MI, tmp, Address, Decoder)" << GuardPostfix
+                         << " { "
+                         << (OpInfo.HasCompleteDecoder
+                                 ? ""
+                                 : "DecodeComplete = false; ")
+                         << "return " << ReturnFail << "; } \\\n";
+  } else {
+    DecOS.indent(Indent) << "MCOperand_CreateImm0(MI, tmp); \\\n";
+  }
+}
+
+bool PrinterCapstone::decoderEmitterEmitPredicateMatchAux(
+    const Init &Val, bool ParenIfBinOp, raw_ostream &PredOS) const {
+  if (auto *D = dyn_cast<DefInit>(&Val)) {
+    if (!D->getDef()->isSubClassOf("SubtargetFeature"))
+      return true;
+    PredOS << PredicateNamespace << "_getFeatureBits(Inst->csh->mode, "
+           << PredicateNamespace << "_" << D->getAsString() << ")";
+    return false;
+  }
+  if (auto *D = dyn_cast<DagInit>(&Val)) {
+    std::string const Op = D->getOperator()->getAsString();
+    if (Op == "not" && D->getNumArgs() == 1) {
+      PredOS << '!';
+      return decoderEmitterEmitPredicateMatchAux(*D->getArg(0), true, PredOS);
+    }
+    if ((Op == "any_of" || Op == "all_of") && D->getNumArgs() > 0) {
+      bool const Paren =
+          D->getNumArgs() > 1 && std::exchange(ParenIfBinOp, true);
+      if (Paren)
+        PredOS << '(';
+      ListSeparator LS(Op == "any_of" ? " || " : " && ");
+      for (auto *Arg : D->getArgs()) {
+        PredOS << LS;
+        if (decoderEmitterEmitPredicateMatchAux(*Arg, ParenIfBinOp, PredOS))
+          return true;
+      }
+      if (Paren)
+        PredOS << ')';
+      return false;
+    }
+  }
+  return true;
+}
+
+bool PrinterCapstone::decoderEmitterEmitPredicateMatch(
+    raw_ostream &PredOS, const ListInit *Predicates, unsigned Opc) const {
+  bool IsFirstEmission = true;
+  for (unsigned I = 0; I < Predicates->size(); ++I) {
+    Record *Pred = Predicates->getElementAsRecord(I);
+    if (!Pred->getValue("AssemblerMatcherPredicate"))
+      continue;
+
+    if (!isa<DagInit>(Pred->getValue("AssemblerCondDag")->getValue()))
+      continue;
+
+    if (!IsFirstEmission)
+      PredOS << " && ";
+    if (decoderEmitterEmitPredicateMatchAux(
+            *Pred->getValueAsDag("AssemblerCondDag"), Predicates->size() > 1,
+            PredOS))
+      PrintFatalError(Pred->getLoc(), "Invalid AssemblerCondDag!");
+    IsFirstEmission = false;
+  }
+  return !Predicates->empty();
+}
+
+void PrinterCapstone::decoderEmitterEmitFieldFromInstruction() const {
+  OS << "// Helper function for extracting fields from encoded instructions.\n"
+     << "#define FieldFromInstruction(fname, InsnType) \\\n"
+     << "static InsnType fname(InsnType insn, unsigned startBit, unsigned "
+        "numBits) \\\n"
+     << "{ \\\n"
+     << "  InsnType fieldMask; \\\n"
+     << "  if (numBits == sizeof(InsnType) * 8) \\\n"
+     << "    fieldMask = (InsnType)(-1LL); \\\n"
+     << "  else \\\n"
+     << "    fieldMask = (((InsnType)1 << numBits) - 1) << startBit; \\\n"
+     << "  return (insn & fieldMask) >> startBit; \\\n"
+     << "}\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitInsertBits() const { return; }
+
+void PrinterCapstone::decoderEmitterEmitDecodeInstruction(
+    bool IsVarLenInst) const {
+  OS << "#define DecodeInstruction(fname, fieldname, decoder, InsnType) \\\n"
+     << "static DecodeStatus fname(const uint8_t DecodeTable[], "
+        "MCInst *MI, \\\n"
+     << "                                      InsnType insn, uint64_t "
+        "Address) { \\\n"
+     << "  const uint8_t *Ptr = DecodeTable; \\\n"
+     << "  uint64_t CurFieldValue = 0; \\\n"
+     << "  DecodeStatus S = MCDisassembler_Success; \\\n"
+     << "  while (true) { \\\n"
+     << "    ptrdiff_t Loc = Ptr - DecodeTable; \\\n"
+     << "    switch (*Ptr) { \\\n"
+     << "    default: \\\n"
+     << "      return MCDisassembler_Fail; \\\n"
+     << "    case MCD_OPC_ExtractField: { \\\n"
+     << "      unsigned Start = *++Ptr; \\\n"
+     << "      unsigned Len = *++Ptr; \\\n"
+     << "      ++Ptr; \\\n";
+  if (IsVarLenInst) {
+    OS << "      makeUp(insn, Start + Len); \\\n";
+  }
+  OS << "      CurFieldValue = fieldname(insn, Start, Len); \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_FilterValue: { \\\n"
+     << "      /* Decode the field value. */ \\\n"
+     << "      unsigned Len; \\\n"
+     << "      uint64_t Val = decodeULEB128(++Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      /* NumToSkip is a plain 24-bit integer. */ \\\n"
+     << "      unsigned NumToSkip = *Ptr++; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 8; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 16; \\\n"
+     << "      /* Perform the filter operation. */ \\\n"
+     << "      if (Val != CurFieldValue) \\\n"
+     << "        Ptr += NumToSkip; \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_CheckField: { \\\n"
+     << "      unsigned Start = *++Ptr; \\\n"
+     << "      unsigned Len = *++Ptr; \\\n";
+  if (IsVarLenInst) {
+    OS << "      makeUp(insn, Start + Len); \\\n";
+  }
+  OS << "      uint64_t FieldValue = fieldname(insn, Start, Len); "
+        "\\\n"
+     << "      /* Decode the field value. */ \\\n"
+     << "      unsigned PtrLen = 0; \\\n"
+     << "      uint64_t ExpectedValue = decodeULEB128(++Ptr, &PtrLen); \\\n"
+     << "      Ptr += PtrLen; \\\n"
+     << "      /* NumToSkip is a plain 24-bit integer. */ \\\n"
+     << "      unsigned NumToSkip = *Ptr++; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 8; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 16; \\\n"
+     << "      /* If the actual and expected values don't match, skip. */ \\\n"
+     << "      if (ExpectedValue != FieldValue) \\\n"
+     << "        Ptr += NumToSkip; \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_CheckPredicate: { \\\n"
+     << "      unsigned Len; \\\n"
+     << "      /* Decode the Predicate Index value. */ \\\n"
+     << "      unsigned PIdx = decodeULEB128(++Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      /* NumToSkip is a plain 24-bit integer. */ \\\n"
+     << "      unsigned NumToSkip = *Ptr++; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 8; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 16; \\\n"
+     << "      /* Check the predicate. */ \\\n"
+     << "      bool Pred; \\\n"
+     << "      if (!(Pred = checkDecoderPredicate(PIdx))) \\\n"
+     << "        Ptr += NumToSkip; \\\n"
+     << "      (void)Pred; \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_Decode: { \\\n"
+     << "      unsigned Len; \\\n"
+     << "      /* Decode the Opcode value. */ \\\n"
+     << "      unsigned Opc = decodeULEB128(++Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      unsigned DecodeIdx = decodeULEB128(Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      MCInst_clear(MI); \\\n"
+     << "      MCInst_setOpcode(MI, Opc); \\\n"
+     << "      bool DecodeComplete; \\\n";
+  if (IsVarLenInst) {
+    OS << "      Len = InstrLenTable[Opc]; \\\n"
+       << "      makeUp(insn, Len); \\\n";
+  }
+  OS << "      S = decoder(S, DecodeIdx, insn, MI, Address, "
+        "&DecodeComplete); \\\n"
+     << "      return S; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_TryDecode: { \\\n"
+     << "      unsigned Len; \\\n"
+     << "      /* Decode the Opcode value. */ \\\n"
+     << "      unsigned Opc = decodeULEB128(++Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      unsigned DecodeIdx = decodeULEB128(Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      /* NumToSkip is a plain 24-bit integer. */ \\\n"
+     << "      unsigned NumToSkip = *Ptr++; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 8; \\\n"
+     << "      NumToSkip |= (*Ptr++) << 16; \\\n"
+     << "      /* Perform the decode operation. */ \\\n"
+     << "      MCInst_setOpcode(MI, Opc); \\\n"
+     << "      bool DecodeComplete; \\\n"
+     << "      S = decoder(S, DecodeIdx, insn, MI, Address, "
+     << "&DecodeComplete); \\\n"
+     << "      if (DecodeComplete) { \\\n"
+     << "        /* Decoding complete. */ \\\n"
+     << "        return S; \\\n"
+     << "      } else { \\\n"
+     << "        /* If the decoding was incomplete, skip. */ \\\n"
+     << "        Ptr += NumToSkip; \\\n"
+     << "        /* Reset decode status. This also drops a SoftFail status "
+        "that could be */ \\\n"
+     << "        /* set before the decode attempt. */ \\\n"
+     << "        S = MCDisassembler_Success; \\\n"
+     << "      } \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_SoftFail: { \\\n"
+     << "      /* Decode the mask values. */ \\\n"
+     << "      unsigned Len; \\\n"
+     << "      uint64_t PositiveMask = decodeULEB128(++Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      uint64_t NegativeMask = decodeULEB128(Ptr, &Len); \\\n"
+     << "      Ptr += Len; \\\n"
+     << "      bool Fail = (insn & PositiveMask) != 0 || (~insn & "
+        "NegativeMask) != 0; \\\n"
+     << "      if (Fail) \\\n"
+     << "        S = MCDisassembler_SoftFail; \\\n"
+     << "      break; \\\n"
+     << "    } \\\n"
+     << "    case MCD_OPC_Fail: { \\\n"
+     << "      return MCDisassembler_Fail; \\\n"
+     << "    } \\\n"
+     << "    } \\\n"
+     << "  } \\\n"
+     << "  /* Bogisity detected in disassembler state machine! */ \\\n"
+     << "}\n\n";
+  OS << "FieldFromInstruction(fieldFromInstruction_2, uint16_t)\n"
+     << "DecodeToMCInst(decodeToMCInst_2, fieldFromInstruction_2, uint16_t)\n"
+     << "DecodeInstruction(decodeInstruction_2, fieldFromInstruction_2, "
+        "decodeToMCInst_2, uint16_t)\n"
+     << "\n"
+     << "FieldFromInstruction(fieldFromInstruction_4, uint32_t)\n"
+     << "DecodeToMCInst(decodeToMCInst_4, fieldFromInstruction_4, uint32_t)\n"
+     << "DecodeInstruction(decodeInstruction_4, fieldFromInstruction_4, "
+        "decodeToMCInst_4, uint32_t)\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitTable(
+    DecoderTable &Table, unsigned BitWidth, StringRef Namespace,
+    std::vector<EncodingAndInst> &NumberedEncodings) const {
+  unsigned Indent = 0;
+  OS.indent(Indent) << "static const uint8_t DecoderTable" << Namespace
+                    << BitWidth << "[] = {\n";
+
+  Indent += 2;
+
+  // FIXME: We may be able to use the NumToSkip values to recover
+  // appropriate indentation levels.
+  DecoderTable::const_iterator I = Table.begin();
+  DecoderTable::const_iterator const E = Table.end();
+  while (I != E) {
+    assert(I < E && "incomplete decode table entry!");
+
+    uint64_t const Pos = I - Table.begin();
+    OS << "/* " << Pos << " */";
+    OS.PadToColumn(12);
+
+    switch (*I) {
+    default:
+      PrintFatalError("invalid decode table opcode");
+    case MCD::OPC_ExtractField: {
+      ++I;
+      unsigned const Start = *I++;
+      unsigned const Len = *I++;
+      OS.indent(Indent) << "MCD_OPC_ExtractField, " << Start << ", " << Len
+                        << ",  // Inst{";
+      if (Len > 1)
+        OS << (Start + Len - 1) << "-";
+      OS << Start << "} ...\n";
+      break;
+    }
+    case MCD::OPC_FilterValue: {
+      ++I;
+      OS.indent(Indent) << "MCD_OPC_FilterValue, ";
+      // The filter value is ULEB128 encoded.
+      while (*I >= 128)
+        OS << (unsigned)*I++ << ", ";
+      OS << (unsigned)*I++ << ", ";
+
+      // 24-bit numtoskip value.
+      uint8_t Byte = *I++;
+      uint32_t NumToSkip = Byte;
+      OS << (unsigned)Byte << ", ";
+      Byte = *I++;
+      OS << (unsigned)Byte << ", ";
+      NumToSkip |= Byte << 8;
+      Byte = *I++;
+      OS << utostr(Byte) << ", ";
+      NumToSkip |= Byte << 16;
+      OS << "// Skip to: " << ((I - Table.begin()) + NumToSkip) << "\n";
+      break;
+    }
+    case MCD::OPC_CheckField: {
+      ++I;
+      unsigned const Start = *I++;
+      unsigned const Len = *I++;
+      OS.indent(Indent) << "MCD_OPC_CheckField, " << Start << ", " << Len
+                        << ", "; // << Val << ", " << NumToSkip << ",\n";
+      // ULEB128 encoded field value.
+      for (; *I >= 128; ++I)
+        OS << (unsigned)*I << ", ";
+      OS << (unsigned)*I++ << ", ";
+      // 24-bit numtoskip value.
+      uint8_t Byte = *I++;
+      uint32_t NumToSkip = Byte;
+      OS << (unsigned)Byte << ", ";
+      Byte = *I++;
+      OS << (unsigned)Byte << ", ";
+      NumToSkip |= Byte << 8;
+      Byte = *I++;
+      OS << utostr(Byte) << ", ";
+      NumToSkip |= Byte << 16;
+      OS << "// Skip to: " << ((I - Table.begin()) + NumToSkip) << "\n";
+      break;
+    }
+    case MCD::OPC_CheckPredicate: {
+      ++I;
+      OS.indent(Indent) << "MCD_OPC_CheckPredicate, ";
+      for (; *I >= 128; ++I)
+        OS << (unsigned)*I << ", ";
+      OS << (unsigned)*I++ << ", ";
+
+      // 24-bit numtoskip value.
+      uint8_t Byte = *I++;
+      uint32_t NumToSkip = Byte;
+      OS << (unsigned)Byte << ", ";
+      Byte = *I++;
+      OS << (unsigned)Byte << ", ";
+      NumToSkip |= Byte << 8;
+      Byte = *I++;
+      OS << utostr(Byte) << ", ";
+      NumToSkip |= Byte << 16;
+      OS << "// Skip to: " << ((I - Table.begin()) + NumToSkip) << "\n";
+      break;
+    }
+    case MCD::OPC_Decode:
+    case MCD::OPC_TryDecode: {
+      bool const IsTry = *I == MCD::OPC_TryDecode;
+      ++I;
+      // Extract the ULEB128 encoded Opcode to a buffer.
+      uint8_t Buffer[16], *P = Buffer;
+      while ((*P++ = *I++) >= 128)
+        assert((P - Buffer) <= (ptrdiff_t)sizeof(Buffer) &&
+               "ULEB128 value too large!");
+      // Decode the Opcode value.
+      unsigned const Opc = decodeULEB128(Buffer);
+      OS.indent(Indent) << "MCD_OPC_" << (IsTry ? "Try" : "") << "Decode, ";
+      for (P = Buffer; *P >= 128; ++P)
+        OS << (unsigned)*P << ", ";
+      OS << (unsigned)*P << ", ";
+
+      // Decoder index.
+      for (; *I >= 128; ++I)
+        OS << (unsigned)*I << ", ";
+      OS << (unsigned)*I++ << ", ";
+
+      if (!IsTry) {
+        OS << "// Opcode: " << NumberedEncodings[Opc] << "\n";
+        break;
+      }
+
+      // Fallthrough for OPC_TryDecode.
+
+      // 24-bit numtoskip value.
+      uint8_t Byte = *I++;
+      uint32_t NumToSkip = Byte;
+      OS << (unsigned)Byte << ", ";
+      Byte = *I++;
+      OS << (unsigned)Byte << ", ";
+      NumToSkip |= Byte << 8;
+      Byte = *I++;
+      OS << utostr(Byte) << ", ";
+      NumToSkip |= Byte << 16;
+
+      OS << "// Opcode: " << NumberedEncodings[Opc]
+         << ", skip to: " << ((I - Table.begin()) + NumToSkip) << "\n";
+      break;
+    }
+    case MCD::OPC_SoftFail: {
+      ++I;
+      OS.indent(Indent) << "MCD_OPC_SoftFail";
+      // Positive mask
+      uint64_t Value = 0;
+      unsigned Shift = 0;
+      do {
+        OS << ", " << (unsigned)*I;
+        Value += (*I & 0x7f) << Shift;
+        Shift += 7;
+      } while (*I++ >= 128);
+      if (Value > 127) {
+        OS << " /* 0x";
+        OS.write_hex(Value);
+        OS << " */";
+      }
+      // Negative mask
+      Value = 0;
+      Shift = 0;
+      do {
+        OS << ", " << (unsigned)*I;
+        Value += (*I & 0x7f) << Shift;
+        Shift += 7;
+      } while (*I++ >= 128);
+      if (Value > 127) {
+        OS << " /* 0x";
+        OS.write_hex(Value);
+        OS << " */";
+      }
+      OS << ",\n";
+      break;
+    }
+    case MCD::OPC_Fail: {
+      ++I;
+      OS.indent(Indent) << "MCD_OPC_Fail,\n";
+      break;
+    }
+    }
+  }
+  OS.indent(Indent) << "0\n";
+
+  Indent -= 2;
+
+  OS.indent(Indent) << "};\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitInstrLenTable(
+    std::vector<unsigned> &InstrLen) const {
+  OS << "static const uint8_t InstrLenTable[] = {\n";
+  for (unsigned const &Len : InstrLen) {
+    OS << Len << ",\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitPredicateFunction(
+    PredicateSet &Predicates, unsigned Indentation) const {
+  // The predicate function is just a big switch statement based on the
+  // input predicate index.
+  OS.indent(Indentation) << "static bool checkDecoderPredicate(unsigned Idx"
+                         << ") {\n";
+  Indentation += 2;
+  if (!Predicates.empty()) {
+    OS.indent(Indentation) << "switch (Idx) {\n";
+    OS.indent(Indentation)
+        << "default: /* llvm_unreachable(\"Invalid index!\"); */\n";
+    unsigned Index = 0;
+    for (const auto &Predicate : Predicates) {
+      OS.indent(Indentation) << "case " << Index++ << ":\n";
+      OS.indent(Indentation + 2) << "return (" << Predicate << ");\n";
+    }
+    OS.indent(Indentation) << "}\n";
+  } else {
+    // No case statement to emit
+    OS.indent(Indentation) << "/* llvm_unreachable(\"Invalid index!\"); */\n";
+  }
+  Indentation -= 2;
+  OS.indent(Indentation) << "}\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitDecoderFunction(
+    DecoderSet &Decoders, unsigned Indentation) const {
+  // The decoder function is just a big switch statement based on the
+  // input decoder index.
+  OS.indent(Indentation)
+      << "#define DecodeToMCInst(fname, fieldname, InsnType) \\\n"
+      << "static DecodeStatus fname(DecodeStatus S, unsigned Idx, InsnType "
+         "insn, MCInst *MI, \\\n"
+      << "		uint64_t Address, bool *Decoder) \\\n"
+      << "{ \\\n";
+  Indentation += 2;
+  OS.indent(Indentation) << "InsnType tmp; \\\n";
+  OS.indent(Indentation) << "switch (Idx) { \\\n";
+  OS.indent(Indentation)
+      << "default: /* llvm_unreachable(\"Invalid index!\"); */ \\\n";
+  unsigned Index = 0;
+  for (const auto &Decoder : Decoders) {
+    OS.indent(Indentation) << "case " << Index++ << ": \\\n";
+    OS << Decoder;
+    OS.indent(Indentation + 2) << "return S; \\\n";
+  }
+  OS.indent(Indentation) << "} \\\n";
+  Indentation -= 2;
+  OS.indent(Indentation) << "}\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitIncludes() const {
+  OS << "#include \"../../MCInst.h\"\n"
+     << "#include \"../../LEB128.h\"\n\n";
+}
+
+void PrinterCapstone::decoderEmitterEmitSourceFileHeader() const {
+  OS << "/* Capstone Disassembly Engine, http://www.capstone-engine.org */\n";
+  OS << "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2022, */\n";
+  OS << "/*    Rot127 <unisono@quyllur.org> 2022 */\n";
+  OS << "/* Automatically generated file by the LLVM TableGen Disassembler "
+        "Backend. */\n";
+  OS << "/* Do not edit. */\n\n";
 }
 
 } // end namespace llvm
