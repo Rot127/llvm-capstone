@@ -13,6 +13,7 @@
 #include "AsmWriterInst.h"
 #include "CodeGenSchedule.h"
 #include "Printer.h"
+#include "PrinterTypes.h"
 #include "SubtargetEmitterTypes.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/TableGen/TableGenBackend.h"
@@ -4240,14 +4241,6 @@ void PrinterLLVM::instrInfoEmitEmitSTFNameTable(
   OS << "#endif // NDEBUG\n\n";
 }
 
-static std::string
-getNameForFeatureBitset(const std::vector<Record *> &FeatureBitset) {
-  std::string Name = "CEFBS";
-  for (const auto &Feature : FeatureBitset)
-    Name += ("_" + Feature->getName()).str();
-  return Name;
-}
-
 void PrinterLLVM::instrInfoEmitFeatureBitsEnum(
     std::vector<std::vector<Record *>> const &FeatureBitsets) const {
   OS << "// Feature bitsets.\n"
@@ -4383,6 +4376,1618 @@ void PrinterLLVM::instrInfoEmitComputeAssemblerAvailableFeatures(
     const {
   SubtargetFeatureInfo::emitComputeAssemblerAvailableFeatures(
       TargetName, "", "computeAvailableFeatures", SubtargetFeatures, OS);
+}
+
+//--------------------------
+// Backend: AsmMatcher
+//--------------------------
+
+void PrinterLLVM::asmMatcherEmitSourceFileHeader(
+    std::string const &Desc) const {
+  emitSourceFileHeader(Desc, OS);
+}
+
+void PrinterLLVM::asmMatcherEmitDeclarations(bool HasOptionalOperands,
+                                             bool ReportMultipleNearMisses,
+                                             bool HasOperandInfos) const {
+  OS << "  // This should be included into the middle of the declaration of\n";
+  OS << "  // your subclasses implementation of MCTargetAsmParser.\n";
+  OS << "  FeatureBitset ComputeAvailableFeatures(const FeatureBitset &FB) "
+        "const;\n";
+  if (HasOptionalOperands) {
+    OS << "  void convertToMCInst(unsigned Kind, MCInst &Inst, "
+       << "unsigned Opcode,\n"
+       << "                       const OperandVector &Operands,\n"
+       << "                       const SmallBitVector "
+          "&OptionalOperandsMask);\n";
+  } else {
+    OS << "  void convertToMCInst(unsigned Kind, MCInst &Inst, "
+       << "unsigned Opcode,\n"
+       << "                       const OperandVector &Operands);\n";
+  }
+  OS << "  void convertToMapAndConstraints(unsigned Kind,\n                ";
+  OS << "           const OperandVector &Operands) override;\n";
+  OS << "  unsigned MatchInstructionImpl(const OperandVector &Operands,\n"
+     << "                                MCInst &Inst,\n";
+  if (ReportMultipleNearMisses)
+    OS << "                                SmallVectorImpl<NearMissInfo> "
+          "*NearMisses,\n";
+  else
+    OS << "                                uint64_t &ErrorInfo,\n"
+       << "                                FeatureBitset &MissingFeatures,\n";
+  OS << "                                bool matchingInlineAsm,\n"
+     << "                                unsigned VariantID = 0);\n";
+  if (!ReportMultipleNearMisses)
+    OS << "  unsigned MatchInstructionImpl(const OperandVector &Operands,\n"
+       << "                                MCInst &Inst,\n"
+       << "                                uint64_t &ErrorInfo,\n"
+       << "                                bool matchingInlineAsm,\n"
+       << "                                unsigned VariantID = 0) {\n"
+       << "    FeatureBitset MissingFeatures;\n"
+       << "    return MatchInstructionImpl(Operands, Inst, ErrorInfo, "
+          "MissingFeatures,\n"
+       << "                                matchingInlineAsm, VariantID);\n"
+       << "  }\n\n";
+
+  if (HasOperandInfos) {
+    OS << "  OperandMatchResultTy MatchOperandParserImpl(\n";
+    OS << "    OperandVector &Operands,\n";
+    OS << "    StringRef Mnemonic,\n";
+    OS << "    bool ParseForAllFeatures = false);\n";
+
+    OS << "  OperandMatchResultTy tryCustomParseOperand(\n";
+    OS << "    OperandVector &Operands,\n";
+    OS << "    unsigned MCK);\n\n";
+  }
+}
+
+void PrinterLLVM::asmMatcherEmitOperandDiagTypes(
+    std::set<StringRef> const Types) const {
+  for (StringRef Type : Types)
+    OS << "  Match_" << Type << ",\n";
+  OS << "  END_OPERAND_DIAGNOSTIC_TYPES\n";
+}
+
+/// emitGetSubtargetFeatureName - Emit the helper function to get the
+/// user-level name for a subtarget feature.
+void PrinterLLVM::asmMatcherEmitGetSubtargetFeatureName(
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+        SubtargetFeatures) const {
+  OS << "// User-level names for subtarget features that participate in\n"
+     << "// instruction matching.\n"
+     << "static const char *getSubtargetFeatureName(uint64_t Val) {\n";
+  if (!SubtargetFeatures.empty()) {
+    OS << "  switch(Val) {\n";
+    for (const auto &SF : SubtargetFeatures) {
+      const SubtargetFeatureInfo &SFI = SF.second;
+      // FIXME: Totally just a placeholder name to get the algorithm working.
+      OS << "  case " << SFI.getEnumBitName() << ": return \""
+         << SFI.TheDef->getValueAsString("PredicateName") << "\";\n";
+    }
+    OS << "  default: return \"(unknown)\";\n";
+    OS << "  }\n";
+  } else {
+    // Nothing to emit, so skip the switch
+    OS << "  return \"(unknown)\";\n";
+  }
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionI(
+    StringRef const &TargetName, StringRef const &ClassName,
+    std::string const &TargetOperandClass, bool HasOptionalOperands,
+    size_t MaxNumOperands) const {
+  if (HasOptionalOperands) {
+    *CvtOS << "void " << TargetName << ClassName << "::\n"
+           << "convertToMCInst(unsigned Kind, MCInst &Inst, "
+           << "unsigned Opcode,\n"
+           << "                const OperandVector &Operands,\n"
+           << "                const SmallBitVector &OptionalOperandsMask) {\n";
+  } else {
+    *CvtOS << "void " << TargetName << ClassName << "::\n"
+           << "convertToMCInst(unsigned Kind, MCInst &Inst, "
+           << "unsigned Opcode,\n"
+           << "                const OperandVector &Operands) {\n";
+  }
+  *CvtOS << "  assert(Kind < CVT_NUM_SIGNATURES && \"Invalid signature!\");\n";
+  *CvtOS << "  const uint8_t *Converter = ConversionTable[Kind];\n";
+  if (HasOptionalOperands) {
+    *CvtOS << "  unsigned DefaultsOffset[" << (MaxNumOperands + 1)
+           << "] = { 0 };\n";
+    *CvtOS << "  assert(OptionalOperandsMask.size() == " << (MaxNumOperands)
+           << ");\n";
+    *CvtOS << "  for (unsigned i = 0, NumDefaults = 0; i < " << (MaxNumOperands)
+           << "; ++i) {\n";
+    *CvtOS << "    DefaultsOffset[i + 1] = NumDefaults;\n";
+    *CvtOS << "    NumDefaults += (OptionalOperandsMask[i] ? 1 : 0);\n";
+    *CvtOS << "  }\n";
+  }
+  *CvtOS << "  unsigned OpIdx;\n";
+  *CvtOS << "  Inst.setOpcode(Opcode);\n";
+  *CvtOS << "  for (const uint8_t *p = Converter; *p; p += 2) {\n";
+  if (HasOptionalOperands) {
+    *CvtOS << "    OpIdx = *(p + 1) - DefaultsOffset[*(p + 1)];\n";
+  } else {
+    *CvtOS << "    OpIdx = *(p + 1);\n";
+  }
+  *CvtOS << "    switch (*p) {\n";
+  *CvtOS << "    default: llvm_unreachable(\"invalid conversion entry!\");\n";
+  *CvtOS << "    case CVT_Reg:\n";
+  *CvtOS << "      static_cast<" << TargetOperandClass
+         << " &>(*Operands[OpIdx]).addRegOperands(Inst, 1);\n";
+  *CvtOS << "      break;\n";
+  *CvtOS << "    case CVT_Tied: {\n";
+  *CvtOS << "      assert(OpIdx < (size_t)(std::end(TiedAsmOperandTable) -\n";
+  *CvtOS
+      << "                              std::begin(TiedAsmOperandTable)) &&\n";
+  *CvtOS << "             \"Tied operand not found\");\n";
+  *CvtOS << "      unsigned TiedResOpnd = TiedAsmOperandTable[OpIdx][0];\n";
+  *CvtOS << "      if (TiedResOpnd != (uint8_t)-1)\n";
+  *CvtOS << "        Inst.addOperand(Inst.getOperand(TiedResOpnd));\n";
+  *CvtOS << "      break;\n";
+  *CvtOS << "    }\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionII(
+    std::string const &EnumName, StringRef const &AsmMatchConverter) const {
+  *CvtOS << "    case CVT_" << EnumName << ":\n"
+         << "      " << AsmMatchConverter << "(Inst, Operands);\n"
+         << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionIII(
+    std::string const &EnumName, std::string const TargetOperandClass,
+    bool HasOptionalOperands, MatchableInfo::AsmOperand const &Op,
+    MatchableInfo::ResOperand const &OpInfo) const {
+  *CvtOS << "    case " << EnumName << ":\n";
+  if (Op.Class->IsOptional) {
+    // If optional operand is not present in actual instruction then we
+    // should call its DefaultMethod before RenderMethod
+    assert(HasOptionalOperands);
+    *CvtOS << "      if (OptionalOperandsMask[*(p + 1) - 1]) {\n"
+           << "        " << Op.Class->DefaultMethod << "()"
+           << "->" << Op.Class->RenderMethod << "(Inst, "
+           << OpInfo.MINumOperands << ");\n"
+           << "      } else {\n"
+           << "        static_cast<" << TargetOperandClass
+           << " &>(*Operands[OpIdx])." << Op.Class->RenderMethod << "(Inst, "
+           << OpInfo.MINumOperands << ");\n"
+           << "      }\n";
+  } else {
+    *CvtOS << "      static_cast<" << TargetOperandClass
+           << " &>(*Operands[OpIdx])." << Op.Class->RenderMethod << "(Inst, "
+           << OpInfo.MINumOperands << ");\n";
+  }
+  *CvtOS << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionIV(
+    std::string const &EnumName, int64_t Val) const {
+  *CvtOS << "    case " << EnumName << ":\n"
+         << "      Inst.addOperand(MCOperand::createImm(" << Val << "));\n"
+         << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionV(
+    std::string const &EnumName, std::string const &Reg) const {
+  *CvtOS << "    case " << EnumName << ":\n"
+         << "      Inst.addOperand(MCOperand::createReg(" << Reg << "));\n"
+         << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionFunctionVI() const {
+  *CvtOS << "    }\n  }\n}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandFunctionI(
+    StringRef const &TargetName, StringRef const &ClassName) const {
+  *OpOS << "void " << TargetName << ClassName << "::\n"
+        << "convertToMapAndConstraints(unsigned Kind,\n";
+  OpOS->indent(27);
+  *OpOS << "const OperandVector &Operands) {\n"
+        << "  assert(Kind < CVT_NUM_SIGNATURES && \"Invalid signature!\");\n"
+        << "  unsigned NumMCOperands = 0;\n"
+        << "  const uint8_t *Converter = ConversionTable[Kind];\n"
+        << "  for (const uint8_t *p = Converter; *p; p += 2) {\n"
+        << "    switch (*p) {\n"
+        << "    default: llvm_unreachable(\"invalid conversion entry!\");\n"
+        << "    case CVT_Reg:\n"
+        << "      Operands[*(p + 1)]->setMCOperandNum(NumMCOperands);\n"
+        << "      Operands[*(p + 1)]->setConstraint(\"r\");\n"
+        << "      ++NumMCOperands;\n"
+        << "      break;\n"
+        << "    case CVT_Tied:\n"
+        << "      ++NumMCOperands;\n"
+        << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandFunctionII(
+    std::string const &EnumName, MatchableInfo::AsmOperand const &Op,
+    MatchableInfo::ResOperand const &OpInfo) const {
+  // Add a handler for the operand number lookup.
+  *OpOS << "    case " << EnumName << ":\n"
+        << "      Operands[*(p + 1)]->setMCOperandNum(NumMCOperands);\n";
+
+  if (Op.Class->isRegisterClass())
+    *OpOS << "      Operands[*(p + 1)]->setConstraint(\"r\");\n";
+  else
+    *OpOS << "      Operands[*(p + 1)]->setConstraint(\"m\");\n";
+  *OpOS << "      NumMCOperands += " << OpInfo.MINumOperands << ";\n"
+        << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandFunctionIII(
+    std::string const &EnumName) const {
+  *OpOS << "    case " << EnumName << ":\n"
+        << "      Operands[*(p + 1)]->setMCOperandNum(NumMCOperands);\n"
+        << "      Operands[*(p + 1)]->setConstraint(\"\");\n"
+        << "      ++NumMCOperands;\n"
+        << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandFunctionIV(
+    std::string const &EnumName) const {
+  *OpOS << "    case " << EnumName << ":\n"
+        << "      Operands[*(p + 1)]->setMCOperandNum(NumMCOperands);\n"
+        << "      Operands[*(p + 1)]->setConstraint(\"m\");\n"
+        << "      ++NumMCOperands;\n"
+        << "      break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandFunctionV() const {
+  *OpOS << "    }\n  }\n}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitTiedOperandEnum(
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {
+  OS << "enum {\n";
+  for (auto &KV : TiedOperandsEnumMap) {
+    OS << "  " << KV.second << ",\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitTiedOpTable(
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {
+  OS << "static const uint8_t TiedAsmOperandTable[][3] = {\n";
+  for (auto &KV : TiedOperandsEnumMap) {
+    OS << "  /* " << KV.second << " */ { " << utostr(std::get<0>(KV.first))
+       << ", " << utostr(std::get<1>(KV.first)) << ", "
+       << utostr(std::get<2>(KV.first)) << " },\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitTiedOpEmptyTable() const {
+  OS << "static const uint8_t TiedAsmOperandTable[][3] = "
+        "{ /* empty  */ {0, 0, 0} };\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitOperandConvKindEnum(
+    SmallSetVector<CachedHashString, 16> OperandConversionKinds) const {
+  OS << "enum OperatorConversionKind {\n";
+  for (const auto &Converter : OperandConversionKinds)
+    OS << "  " << Converter << ",\n";
+  OS << "  CVT_NUM_CONVERTERS\n";
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitInstrConvKindEnum(
+    SmallSetVector<CachedHashString, 16> InstructionConversionKinds) const {
+  OS << "enum InstructionConversionKind {\n";
+  for (const auto &Signature : InstructionConversionKinds)
+    OS << "  " << Signature << ",\n";
+  OS << "  CVT_NUM_SIGNATURES\n";
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitConversionTable(
+    size_t MaxRowLength,
+    std::vector<std::vector<uint8_t>> const ConversionTable,
+    SmallSetVector<CachedHashString, 16> InstructionConversionKinds,
+    SmallSetVector<CachedHashString, 16> OperandConversionKinds,
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {
+  OS << "static const uint8_t ConversionTable[CVT_NUM_SIGNATURES]["
+     << MaxRowLength << "] = {\n";
+
+  for (unsigned Row = 0, ERow = ConversionTable.size(); Row != ERow; ++Row) {
+    assert(ConversionTable[Row].size() % 2 == 0 && "bad conversion row!");
+    OS << "  // " << InstructionConversionKinds[Row] << "\n";
+    OS << "  { ";
+    for (unsigned I = 0, E = ConversionTable[Row].size(); I != E; I += 2) {
+      OS << OperandConversionKinds[ConversionTable[Row][I]] << ", ";
+      if (OperandConversionKinds[ConversionTable[Row][I]] !=
+          CachedHashString("CVT_Tied")) {
+        OS << (unsigned)(ConversionTable[Row][I + 1]) << ", ";
+        continue;
+      }
+
+      // For a tied operand, emit a reference to the TiedAsmOperandTable
+      // that contains the operand to copy, and the parsed operands to
+      // check for their tied constraints.
+      auto Key = std::make_tuple((uint8_t)ConversionTable[Row][I + 1],
+                                 (uint8_t)ConversionTable[Row][I + 2],
+                                 (uint8_t)ConversionTable[Row][I + 3]);
+      auto TiedOpndEnum = TiedOperandsEnumMap.find(Key);
+      assert(TiedOpndEnum != TiedOperandsEnumMap.end() &&
+             "No record for tied operand pair");
+      OS << TiedOpndEnum->second << ", ";
+      I += 2;
+    }
+    OS << "CVT_Done },\n";
+  }
+
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherWriteCvtOSToOS() const { OS << CvtOS->str(); }
+
+void PrinterLLVM::asmMatcherWriteOpOSToOS() const { OS << OpOS->str(); }
+
+void PrinterLLVM::asmMatcherEmitMatchClassKindEnum(
+    std::forward_list<ClassInfo> const &Infos) const {
+  OS << "/// MatchClassKind - The kinds of classes which participate in\n"
+     << "/// instruction matching.\n";
+  OS << "enum MatchClassKind {\n";
+  OS << "  InvalidMatchClass = 0,\n";
+  OS << "  OptionalMatchClass = 1,\n";
+  ClassInfo::ClassInfoKind LastKind = ClassInfo::Token;
+  StringRef LastName = "OptionalMatchClass";
+  for (const auto &CI : Infos) {
+    if (LastKind == ClassInfo::Token && CI.Kind != ClassInfo::Token) {
+      OS << "  MCK_LAST_TOKEN = " << LastName << ",\n";
+    } else if (LastKind < ClassInfo::UserClass0 &&
+               CI.Kind >= ClassInfo::UserClass0) {
+      OS << "  MCK_LAST_REGISTER = " << LastName << ",\n";
+    }
+    LastKind = (ClassInfo::ClassInfoKind)CI.Kind;
+    LastName = CI.Name;
+
+    OS << "  " << CI.Name << ", // ";
+    if (CI.Kind == ClassInfo::Token) {
+      OS << "'" << CI.ValueName << "'\n";
+    } else if (CI.isRegisterClass()) {
+      if (!CI.ValueName.empty())
+        OS << "register class '" << CI.ValueName << "'\n";
+      else
+        OS << "derived register class\n";
+    } else {
+      OS << "user defined class '" << CI.ValueName << "'\n";
+    }
+  }
+  OS << "  NumMatchClassKinds\n";
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchClassDiagStrings(
+    AsmMatcherInfo const &Info) const {
+  OS << "static const char *getMatchKindDiag(" << Info.Target.getName()
+     << "AsmParser::" << Info.Target.getName()
+     << "MatchResultTy MatchResult) {\n";
+  OS << "  switch (MatchResult) {\n";
+
+  for (const auto &CI : Info.Classes) {
+    if (!CI.DiagnosticString.empty()) {
+      assert(!CI.DiagnosticType.empty() &&
+             "DiagnosticString set without DiagnosticType");
+      OS << "  case " << Info.Target.getName() << "AsmParser::Match_"
+         << CI.DiagnosticType << ":\n";
+      OS << "    return \"" << CI.DiagnosticString << "\";\n";
+    }
+  }
+
+  OS << "  default:\n";
+  OS << "    return nullptr;\n";
+
+  OS << "  }\n";
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitRegisterMatchErrorFunc(
+    AsmMatcherInfo &Info) const {
+  OS << "static unsigned getDiagKindFromRegisterClass(MatchClassKind "
+        "RegisterClass) {\n";
+  if (none_of(Info.Classes, [](const ClassInfo &CI) {
+        return CI.isRegisterClass() && !CI.DiagnosticType.empty();
+      })) {
+    OS << "  return MCTargetAsmParser::Match_InvalidOperand;\n";
+  } else {
+    OS << "  switch (RegisterClass) {\n";
+    for (const auto &CI : Info.Classes) {
+      if (CI.isRegisterClass() && !CI.DiagnosticType.empty()) {
+        OS << "  case " << CI.Name << ":\n";
+        OS << "    return " << Info.Target.getName() << "AsmParser::Match_"
+           << CI.DiagnosticType << ";\n";
+      }
+    }
+
+    OS << "  default:\n";
+    OS << "    return MCTargetAsmParser::Match_InvalidOperand;\n";
+
+    OS << "  }\n";
+  }
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitIsSubclassI() const {
+  OS << "/// isSubclass - Compute whether \\p A is a subclass of \\p B.\n";
+  OS << "static bool isSubclass(MatchClassKind A, MatchClassKind B) {\n";
+  OS << "  if (A == B)\n";
+  OS << "    return true;\n\n";
+}
+
+bool PrinterLLVM::asmMatcherEmitIsSubclassII(bool EmittedSwitch,
+                                             std::string const &Name) const {
+  bool ESTmp = EmittedSwitch;
+  if (!EmittedSwitch) {
+    OS << "  switch (A) {\n";
+    OS << "  default:\n";
+    OS << "    return false;\n";
+    ESTmp = true;
+  }
+
+  OS << "\n  case " << Name << ":\n";
+  return ESTmp;
+}
+
+void PrinterLLVM::asmMatcherEmitIsSubclassIII(StringRef const &Class) const {
+  OS << "    return B == " << Class << ";\n";
+}
+
+void PrinterLLVM::asmMatcherEmitIsSubclassIV(
+    std::vector<StringRef> const &SuperClasses) const {
+  if (!SuperClasses.empty()) {
+    OS << "    switch (B) {\n";
+    OS << "    default: return false;\n";
+    for (StringRef SC : SuperClasses)
+      OS << "    case " << SC << ": return true;\n";
+    OS << "    }\n";
+  } else {
+    // No case statement to emit
+    OS << "    return false;\n";
+  }
+}
+
+void PrinterLLVM::asmMatcherEmitIsSubclassV(bool EmittedSwitch) const {
+  if (EmittedSwitch)
+    OS << "  }\n";
+  else
+    OS << "  return false;\n";
+
+  OS << "}\n\n";
+}
+
+/// emitValidateOperandClass - Emit the function to validate an operand class.
+void PrinterLLVM::asmMatcherEmitValidateOperandClass(
+    AsmMatcherInfo &Info) const {
+  OS << "static unsigned validateOperandClass(MCParsedAsmOperand &GOp, "
+     << "MatchClassKind Kind) {\n";
+  OS << "  " << Info.Target.getName() << "Operand &Operand = ("
+     << Info.Target.getName() << "Operand &)GOp;\n";
+
+  // The InvalidMatchClass is not to match any operand.
+  OS << "  if (Kind == InvalidMatchClass)\n";
+  OS << "    return MCTargetAsmParser::Match_InvalidOperand;\n\n";
+
+  // Check for Token operands first.
+  // FIXME: Use a more specific diagnostic type.
+  OS << "  if (Operand.isToken() && Kind <= MCK_LAST_TOKEN)\n";
+  OS << "    return isSubclass(matchTokenString(Operand.getToken()), Kind) ?\n"
+     << "             MCTargetAsmParser::Match_Success :\n"
+     << "             MCTargetAsmParser::Match_InvalidOperand;\n\n";
+
+  // Check the user classes. We don't care what order since we're only
+  // actually matching against one of them.
+  OS << "  switch (Kind) {\n"
+        "  default: break;\n";
+  for (const auto &CI : Info.Classes) {
+    if (!CI.isUserClass())
+      continue;
+
+    OS << "  // '" << CI.ClassName << "' class\n";
+    OS << "  case " << CI.Name << ": {\n";
+    OS << "    DiagnosticPredicate DP(Operand." << CI.PredicateMethod
+       << "());\n";
+    OS << "    if (DP.isMatch())\n";
+    OS << "      return MCTargetAsmParser::Match_Success;\n";
+    if (!CI.DiagnosticType.empty()) {
+      OS << "    if (DP.isNearMatch())\n";
+      OS << "      return " << Info.Target.getName() << "AsmParser::Match_"
+         << CI.DiagnosticType << ";\n";
+      OS << "    break;\n";
+    } else
+      OS << "    break;\n";
+    OS << "    }\n";
+  }
+  OS << "  } // end switch (Kind)\n\n";
+
+  // Check for register operands, including sub-classes.
+  OS << "  if (Operand.isReg()) {\n";
+  OS << "    MatchClassKind OpKind;\n";
+  OS << "    switch (Operand.getReg()) {\n";
+  OS << "    default: OpKind = InvalidMatchClass; break;\n";
+  for (const auto &RC : Info.RegisterClasses)
+    OS << "    case " << RC.first->getValueAsString("Namespace")
+       << "::" << RC.first->getName() << ": OpKind = " << RC.second->Name
+       << "; break;\n";
+  OS << "    }\n";
+  OS << "    return isSubclass(OpKind, Kind) ? "
+     << "(unsigned)MCTargetAsmParser::Match_Success :\n                     "
+     << "                 getDiagKindFromRegisterClass(Kind);\n  }\n\n";
+
+  // Expected operand is a register, but actual is not.
+  OS << "  if (Kind > MCK_LAST_TOKEN && Kind <= MCK_LAST_REGISTER)\n";
+  OS << "    return getDiagKindFromRegisterClass(Kind);\n\n";
+
+  // Generic fallthrough match failure case for operands that don't have
+  // specialized diagnostic types.
+  OS << "  return MCTargetAsmParser::Match_InvalidOperand;\n";
+  OS << "}\n\n";
+}
+
+// Emit a function mapping match classes to strings, for debugging.
+void PrinterLLVM::asmMatcherEmitMatchClassKindNames(
+    std::forward_list<ClassInfo> &Infos) const {
+  OS << "#ifndef NDEBUG\n";
+  OS << "const char *getMatchClassName(MatchClassKind Kind) {\n";
+  OS << "  switch (Kind) {\n";
+
+  OS << "  case InvalidMatchClass: return \"InvalidMatchClass\";\n";
+  OS << "  case OptionalMatchClass: return \"OptionalMatchClass\";\n";
+  for (const auto &CI : Infos) {
+    OS << "  case " << CI.Name << ": return \"" << CI.Name << "\";\n";
+  }
+  OS << "  case NumMatchClassKinds: return \"NumMatchClassKinds\";\n";
+
+  OS << "  }\n";
+  OS << "  llvm_unreachable(\"unhandled MatchClassKind!\");\n";
+  OS << "}\n\n";
+  OS << "#endif // NDEBUG\n";
+}
+
+void PrinterLLVM::asmMatcherEmitAsmTiedOperandConstraints(
+    CodeGenTarget &Target, AsmMatcherInfo &Info) const {
+  std::string AsmParserName =
+      std::string(Info.AsmParser->getValueAsString("AsmParserClassName"));
+  OS << "static bool ";
+  OS << "checkAsmTiedOperandConstraints(const " << Target.getName()
+     << AsmParserName << "&AsmParser,\n";
+  OS << "                               unsigned Kind,\n";
+  OS << "                               const OperandVector &Operands,\n";
+  OS << "                               uint64_t &ErrorInfo) {\n";
+  OS << "  assert(Kind < CVT_NUM_SIGNATURES && \"Invalid signature!\");\n";
+  OS << "  const uint8_t *Converter = ConversionTable[Kind];\n";
+  OS << "  for (const uint8_t *p = Converter; *p; p += 2) {\n";
+  OS << "    switch (*p) {\n";
+  OS << "    case CVT_Tied: {\n";
+  OS << "      unsigned OpIdx = *(p + 1);\n";
+  OS << "      assert(OpIdx < (size_t)(std::end(TiedAsmOperandTable) -\n";
+  OS << "                              std::begin(TiedAsmOperandTable)) &&\n";
+  OS << "             \"Tied operand not found\");\n";
+  OS << "      unsigned OpndNum1 = TiedAsmOperandTable[OpIdx][1];\n";
+  OS << "      unsigned OpndNum2 = TiedAsmOperandTable[OpIdx][2];\n";
+  OS << "      if (OpndNum1 != OpndNum2) {\n";
+  OS << "        auto &SrcOp1 = Operands[OpndNum1];\n";
+  OS << "        auto &SrcOp2 = Operands[OpndNum2];\n";
+  OS << "        if (!AsmParser.areEqualRegs(*SrcOp1, *SrcOp2)) {\n";
+  OS << "          ErrorInfo = OpndNum2;\n";
+  OS << "          return false;\n";
+  OS << "        }\n";
+  OS << "      }\n";
+  OS << "      break;\n";
+  OS << "    }\n";
+  OS << "    default:\n";
+  OS << "      break;\n";
+  OS << "    }\n";
+  OS << "  }\n";
+  OS << "  return true;\n";
+  OS << "}\n\n";
+}
+
+std::string PrinterLLVM::getNameForFeatureBitset(
+    const std::vector<Record *> &FeatureBitset) const {
+  std::string Name = "AMFBS";
+  for (const auto &Feature : FeatureBitset)
+    Name += ("_" + Feature->getName()).str();
+  return Name;
+}
+
+void PrinterLLVM::asmMatcherEmitFeatureBitsetEnum(
+    std::vector<std::vector<Record *>> const FeatureBitsets) const {
+  OS << "// Feature bitsets.\n"
+     << "enum : " << getMinimalTypeForRange(FeatureBitsets.size()) << " {\n"
+     << "  AMFBS_None,\n";
+  for (const auto &FeatureBitset : FeatureBitsets) {
+    if (FeatureBitset.empty())
+      continue;
+    OS << "  " << getNameForFeatureBitset(FeatureBitset) << ",\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitFeatureBitsets(
+    std::vector<std::vector<Record *>> const FeatureBitsets,
+    AsmMatcherInfo const &Info) const {
+  OS << "static constexpr FeatureBitset FeatureBitsets[] = {\n"
+     << "  {}, // AMFBS_None\n";
+  for (const auto &FeatureBitset : FeatureBitsets) {
+    if (FeatureBitset.empty())
+      continue;
+    OS << "  {";
+    for (const auto &Feature : FeatureBitset) {
+      const auto &I = Info.SubtargetFeatures.find(Feature);
+      assert(I != Info.SubtargetFeatures.end() && "Didn't import predicate?");
+      OS << I->second.getEnumBitName() << ", ";
+    }
+    OS << "},\n";
+  }
+  OS << "};\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchEntryStruct(
+    unsigned MaxMnemonicIndex, unsigned NumConverters, size_t MaxNumOperands,
+    std::vector<std::vector<Record *>> const FeatureBitsets,
+    AsmMatcherInfo const &Info) const {
+  OS << "  struct MatchEntry {\n";
+  OS << "    " << getMinimalTypeForRange(MaxMnemonicIndex) << " Mnemonic;\n";
+  OS << "    uint16_t Opcode;\n";
+  OS << "    " << getMinimalTypeForRange(NumConverters) << " ConvertFn;\n";
+  OS << "    " << getMinimalTypeForRange(FeatureBitsets.size())
+     << " RequiredFeaturesIdx;\n";
+  OS << "    "
+     << getMinimalTypeForRange(
+            std::distance(Info.Classes.begin(), Info.Classes.end()))
+     << " Classes[" << MaxNumOperands << "];\n";
+  OS << "    StringRef getMnemonic() const {\n";
+  OS << "      return StringRef(MnemonicTable + Mnemonic + 1,\n";
+  OS << "                       MnemonicTable[Mnemonic]);\n";
+  OS << "    }\n";
+  OS << "  };\n";
+  OS << "  // Predicate for searching for an opcode.\n";
+  OS << "  struct LessOpcode {\n";
+  OS << "    bool operator()(const MatchEntry &LHS, StringRef RHS) {\n";
+  OS << "      return LHS.getMnemonic() < RHS;\n";
+  OS << "    }\n";
+  OS << "    bool operator()(StringRef LHS, const MatchEntry &RHS) {\n";
+  OS << "      return LHS < RHS.getMnemonic();\n";
+  OS << "    }\n";
+  OS << "    bool operator()(const MatchEntry &LHS, const MatchEntry &RHS) {\n";
+  OS << "      return LHS.getMnemonic() < RHS.getMnemonic();\n";
+  OS << "    }\n";
+  OS << "  };\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchFunction(
+    CodeGenTarget const &Target, Record const *AsmParser,
+    StringRef const &ClassName, bool HasMnemonicFirst, bool HasOptionalOperands,
+    bool ReportMultipleNearMisses, bool HasMnemonicAliases,
+    size_t MaxNumOperands, bool HasDeprecation,
+    unsigned int VariantCount) const {
+  OS << "unsigned " << Target.getName() << ClassName << "::\n"
+     << "MatchInstructionImpl(const OperandVector &Operands,\n";
+  OS << "                     MCInst &Inst,\n";
+  if (ReportMultipleNearMisses)
+    OS << "                     SmallVectorImpl<NearMissInfo> *NearMisses,\n";
+  else
+    OS << "                     uint64_t &ErrorInfo,\n"
+       << "                     FeatureBitset &MissingFeatures,\n";
+  OS << "                     bool matchingInlineAsm, unsigned VariantID) {\n";
+
+  if (!ReportMultipleNearMisses) {
+    OS << "  // Eliminate obvious mismatches.\n";
+    OS << "  if (Operands.size() > " << (MaxNumOperands + HasMnemonicFirst)
+       << ") {\n";
+    OS << "    ErrorInfo = " << (MaxNumOperands + HasMnemonicFirst) << ";\n";
+    OS << "    return Match_InvalidOperand;\n";
+    OS << "  }\n\n";
+  }
+
+  // Emit code to get the available features.
+  OS << "  // Get the current feature set.\n";
+  OS << "  const FeatureBitset &AvailableFeatures = "
+        "getAvailableFeatures();\n\n";
+
+  OS << "  // Get the instruction mnemonic, which is the first token.\n";
+  if (HasMnemonicFirst) {
+    OS << "  StringRef Mnemonic = ((" << Target.getName()
+       << "Operand &)*Operands[0]).getToken();\n\n";
+  } else {
+    OS << "  StringRef Mnemonic;\n";
+    OS << "  if (Operands[0]->isToken())\n";
+    OS << "    Mnemonic = ((" << Target.getName()
+       << "Operand &)*Operands[0]).getToken();\n\n";
+  }
+
+  if (HasMnemonicAliases) {
+    OS << "  // Process all MnemonicAliases to remap the mnemonic.\n";
+    OS << "  applyMnemonicAliases(Mnemonic, AvailableFeatures, VariantID);\n\n";
+  }
+
+  // Emit code to compute the class list for this operand vector.
+  if (!ReportMultipleNearMisses) {
+    OS << "  // Some state to try to produce better error messages.\n";
+    OS << "  bool HadMatchOtherThanFeatures = false;\n";
+    OS << "  bool HadMatchOtherThanPredicate = false;\n";
+    OS << "  unsigned RetCode = Match_InvalidOperand;\n";
+    OS << "  MissingFeatures.set();\n";
+    OS << "  // Set ErrorInfo to the operand that mismatches if it is\n";
+    OS << "  // wrong for all instances of the instruction.\n";
+    OS << "  ErrorInfo = ~0ULL;\n";
+  }
+
+  if (HasOptionalOperands) {
+    OS << "  SmallBitVector OptionalOperandsMask(" << MaxNumOperands << ");\n";
+  }
+
+  // Emit code to search the table.
+  OS << "  // Find the appropriate table for this asm variant.\n";
+  OS << "  const MatchEntry *Start, *End;\n";
+  OS << "  switch (VariantID) {\n";
+  OS << "  default: llvm_unreachable(\"invalid variant!\");\n";
+  for (unsigned VC = 0; VC != VariantCount; ++VC) {
+    Record *AsmVariant = Target.getAsmParserVariant(VC);
+    int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
+    OS << "  case " << AsmVariantNo << ": Start = std::begin(MatchTable" << VC
+       << "); End = std::end(MatchTable" << VC << "); break;\n";
+  }
+  OS << "  }\n";
+
+  OS << "  // Search the table.\n";
+  if (HasMnemonicFirst) {
+    OS << "  auto MnemonicRange = "
+          "std::equal_range(Start, End, Mnemonic, LessOpcode());\n\n";
+  } else {
+    OS << "  auto MnemonicRange = std::make_pair(Start, End);\n";
+    OS << "  unsigned SIndex = Mnemonic.empty() ? 0 : 1;\n";
+    OS << "  if (!Mnemonic.empty())\n";
+    OS << "    MnemonicRange = "
+          "std::equal_range(Start, End, Mnemonic.lower(), LessOpcode());\n\n";
+  }
+
+  OS << "  DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"AsmMatcher: found \" "
+        "<<\n"
+     << "  std::distance(MnemonicRange.first, MnemonicRange.second) <<\n"
+     << "  \" encodings with mnemonic '\" << Mnemonic << \"'\\n\");\n\n";
+
+  OS << "  // Return a more specific error code if no mnemonics match.\n";
+  OS << "  if (MnemonicRange.first == MnemonicRange.second)\n";
+  OS << "    return Match_MnemonicFail;\n\n";
+
+  OS << "  for (const MatchEntry *it = MnemonicRange.first, "
+     << "*ie = MnemonicRange.second;\n";
+  OS << "       it != ie; ++it) {\n";
+  OS << "    const FeatureBitset &RequiredFeatures = "
+        "FeatureBitsets[it->RequiredFeaturesIdx];\n";
+  OS << "    bool HasRequiredFeatures =\n";
+  OS << "      (AvailableFeatures & RequiredFeatures) == RequiredFeatures;\n";
+  OS << "    DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Trying to match "
+        "opcode \"\n";
+  OS << "                                          << MII.getName(it->Opcode) "
+        "<< \"\\n\");\n";
+
+  if (ReportMultipleNearMisses) {
+    OS << "    // Some state to record ways in which this instruction did not "
+          "match.\n";
+    OS << "    NearMissInfo OperandNearMiss = NearMissInfo::getSuccess();\n";
+    OS << "    NearMissInfo FeaturesNearMiss = NearMissInfo::getSuccess();\n";
+    OS << "    NearMissInfo EarlyPredicateNearMiss = "
+          "NearMissInfo::getSuccess();\n";
+    OS << "    NearMissInfo LatePredicateNearMiss = "
+          "NearMissInfo::getSuccess();\n";
+    OS << "    bool MultipleInvalidOperands = false;\n";
+  }
+
+  if (HasMnemonicFirst) {
+    OS << "    // equal_range guarantees that instruction mnemonic matches.\n";
+    OS << "    assert(Mnemonic == it->getMnemonic());\n";
+  }
+
+  // Emit check that the subclasses match.
+  if (!ReportMultipleNearMisses)
+    OS << "    bool OperandsValid = true;\n";
+  if (HasOptionalOperands) {
+    OS << "    OptionalOperandsMask.reset(0, " << MaxNumOperands << ");\n";
+  }
+  OS << "    for (unsigned FormalIdx = " << (HasMnemonicFirst ? "0" : "SIndex")
+     << ", ActualIdx = " << (HasMnemonicFirst ? "1" : "SIndex")
+     << "; FormalIdx != " << MaxNumOperands << "; ++FormalIdx) {\n";
+  OS << "      auto Formal = "
+     << "static_cast<MatchClassKind>(it->Classes[FormalIdx]);\n";
+  OS << "      DEBUG_WITH_TYPE(\"asm-matcher\",\n";
+  OS << "                      dbgs() << \"  Matching formal operand class \" "
+        "<< getMatchClassName(Formal)\n";
+  OS << "                             << \" against actual operand at index \" "
+        "<< ActualIdx);\n";
+  OS << "      if (ActualIdx < Operands.size())\n";
+  OS << "        DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \" (\";\n";
+  OS << "                        Operands[ActualIdx]->print(dbgs()); dbgs() << "
+        "\"): \");\n";
+  OS << "      else\n";
+  OS << "        DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \": \");\n";
+  OS << "      if (ActualIdx >= Operands.size()) {\n";
+  OS << "        DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"actual operand "
+        "index out of range\\n\");\n";
+  if (ReportMultipleNearMisses) {
+    OS << "        bool ThisOperandValid = (Formal == "
+       << "InvalidMatchClass) || "
+          "isSubclass(Formal, OptionalMatchClass);\n";
+    OS << "        if (!ThisOperandValid) {\n";
+    OS << "          if (!OperandNearMiss) {\n";
+    OS << "            // Record info about match failure for later use.\n";
+    OS << "            DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"recording "
+          "too-few-operands near miss\\n\");\n";
+    OS << "            OperandNearMiss =\n";
+    OS << "                NearMissInfo::getTooFewOperands(Formal, "
+          "it->Opcode);\n";
+    OS << "          } else if (OperandNearMiss.getKind() != "
+          "NearMissInfo::NearMissTooFewOperands) {\n";
+    OS << "            // If more than one operand is invalid, give up on this "
+          "match entry.\n";
+    OS << "            DEBUG_WITH_TYPE(\n";
+    OS << "                \"asm-matcher\",\n";
+    OS << "                dbgs() << \"second invalid operand, giving up on "
+          "this opcode\\n\");\n";
+    OS << "            MultipleInvalidOperands = true;\n";
+    OS << "            break;\n";
+    OS << "          }\n";
+    OS << "        } else {\n";
+    OS << "          DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"but formal "
+          "operand not required\\n\");\n";
+    OS << "        }\n";
+    OS << "        continue;\n";
+  } else {
+    OS << "        if (Formal == InvalidMatchClass) {\n";
+    if (HasOptionalOperands) {
+      OS << "          OptionalOperandsMask.set(FormalIdx, " << MaxNumOperands
+         << ");\n";
+    }
+    OS << "          break;\n";
+    OS << "        }\n";
+    OS << "        if (isSubclass(Formal, OptionalMatchClass)) {\n";
+    if (HasOptionalOperands) {
+      OS << "          OptionalOperandsMask.set(FormalIdx);\n";
+    }
+    OS << "          continue;\n";
+    OS << "        }\n";
+    OS << "        OperandsValid = false;\n";
+    OS << "        ErrorInfo = ActualIdx;\n";
+    OS << "        break;\n";
+  }
+  OS << "      }\n";
+  OS << "      MCParsedAsmOperand &Actual = *Operands[ActualIdx];\n";
+  OS << "      unsigned Diag = validateOperandClass(Actual, Formal);\n";
+  OS << "      if (Diag == Match_Success) {\n";
+  OS << "        DEBUG_WITH_TYPE(\"asm-matcher\",\n";
+  OS << "                        dbgs() << \"match success using generic "
+        "matcher\\n\");\n";
+  OS << "        ++ActualIdx;\n";
+  OS << "        continue;\n";
+  OS << "      }\n";
+  OS << "      // If the generic handler indicates an invalid operand\n";
+  OS << "      // failure, check for a special case.\n";
+  OS << "      if (Diag != Match_Success) {\n";
+  OS << "        unsigned TargetDiag = validateTargetOperandClass(Actual, "
+        "Formal);\n";
+  OS << "        if (TargetDiag == Match_Success) {\n";
+  OS << "          DEBUG_WITH_TYPE(\"asm-matcher\",\n";
+  OS << "                          dbgs() << \"match success using target "
+        "matcher\\n\");\n";
+  OS << "          ++ActualIdx;\n";
+  OS << "          continue;\n";
+  OS << "        }\n";
+  OS << "        // If the target matcher returned a specific error code use\n";
+  OS << "        // that, else use the one from the generic matcher.\n";
+  OS << "        if (TargetDiag != Match_InvalidOperand && "
+        "HasRequiredFeatures)\n";
+  OS << "          Diag = TargetDiag;\n";
+  OS << "      }\n";
+  OS << "      // If current formal operand wasn't matched and it is optional\n"
+     << "      // then try to match next formal operand\n";
+  OS << "      if (Diag == Match_InvalidOperand "
+     << "&& isSubclass(Formal, OptionalMatchClass)) {\n";
+  if (HasOptionalOperands) {
+    OS << "        OptionalOperandsMask.set(FormalIdx);\n";
+  }
+  OS << "        DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"ignoring "
+        "optional operand\\n\");\n";
+  OS << "        continue;\n";
+  OS << "      }\n";
+
+  if (ReportMultipleNearMisses) {
+    OS << "      if (!OperandNearMiss) {\n";
+    OS << "        // If this is the first invalid operand we have seen, "
+          "record some\n";
+    OS << "        // information about it.\n";
+    OS << "        DEBUG_WITH_TYPE(\n";
+    OS << "            \"asm-matcher\",\n";
+    OS << "            dbgs()\n";
+    OS << "                << \"operand match failed, recording near-miss with "
+          "diag code \"\n";
+    OS << "                << Diag << \"\\n\");\n";
+    OS << "        OperandNearMiss =\n";
+    OS << "            NearMissInfo::getMissedOperand(Diag, Formal, "
+          "it->Opcode, ActualIdx);\n";
+    OS << "        ++ActualIdx;\n";
+    OS << "      } else {\n";
+    OS << "        // If more than one operand is invalid, give up on this "
+          "match entry.\n";
+    OS << "        DEBUG_WITH_TYPE(\n";
+    OS << "            \"asm-matcher\",\n";
+    OS << "            dbgs() << \"second operand mismatch, skipping this "
+          "opcode\\n\");\n";
+    OS << "        MultipleInvalidOperands = true;\n";
+    OS << "        break;\n";
+    OS << "      }\n";
+    OS << "    }\n\n";
+  } else {
+    OS << "      // If this operand is broken for all of the instances of "
+          "this\n";
+    OS << "      // mnemonic, keep track of it so we can report loc info.\n";
+    OS << "      // If we already had a match that only failed due to a\n";
+    OS << "      // target predicate, that diagnostic is preferred.\n";
+    OS << "      if (!HadMatchOtherThanPredicate &&\n";
+    OS << "          (it == MnemonicRange.first || ErrorInfo <= ActualIdx)) "
+          "{\n";
+    OS << "        if (HasRequiredFeatures && (ErrorInfo != ActualIdx || Diag "
+          "!= Match_InvalidOperand))\n";
+    OS << "          RetCode = Diag;\n";
+    OS << "        ErrorInfo = ActualIdx;\n";
+    OS << "      }\n";
+    OS << "      // Otherwise, just reject this instance of the mnemonic.\n";
+    OS << "      OperandsValid = false;\n";
+    OS << "      break;\n";
+    OS << "    }\n\n";
+  }
+
+  if (ReportMultipleNearMisses)
+    OS << "    if (MultipleInvalidOperands) {\n";
+  else
+    OS << "    if (!OperandsValid) {\n";
+  OS << "      DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Opcode result: "
+        "multiple \"\n";
+  OS << "                                               \"operand mismatches, "
+        "ignoring \"\n";
+  OS << "                                               \"this opcode\\n\");\n";
+  OS << "      continue;\n";
+  OS << "    }\n";
+
+  // Emit check that the required features are available.
+  OS << "    if (!HasRequiredFeatures) {\n";
+  if (!ReportMultipleNearMisses)
+    OS << "      HadMatchOtherThanFeatures = true;\n";
+  OS << "      FeatureBitset NewMissingFeatures = RequiredFeatures & "
+        "~AvailableFeatures;\n";
+  OS << "      DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Missing target "
+        "features:\";\n";
+  OS << "                      for (unsigned I = 0, E = "
+        "NewMissingFeatures.size(); I != E; ++I)\n";
+  OS << "                        if (NewMissingFeatures[I])\n";
+  OS << "                          dbgs() << ' ' << I;\n";
+  OS << "                      dbgs() << \"\\n\");\n";
+  if (ReportMultipleNearMisses) {
+    OS << "      FeaturesNearMiss = "
+          "NearMissInfo::getMissedFeature(NewMissingFeatures);\n";
+  } else {
+    OS << "      if (NewMissingFeatures.count() <=\n"
+          "          MissingFeatures.count())\n";
+    OS << "        MissingFeatures = NewMissingFeatures;\n";
+    OS << "      continue;\n";
+  }
+  OS << "    }\n";
+  OS << "\n";
+  OS << "    Inst.clear();\n\n";
+  OS << "    Inst.setOpcode(it->Opcode);\n";
+  // Verify the instruction with the target-specific match predicate function.
+  OS << "    // We have a potential match but have not rendered the operands.\n"
+     << "    // Check the target predicate to handle any context sensitive\n"
+        "    // constraints.\n"
+     << "    // For example, Ties that are referenced multiple times must be\n"
+        "    // checked here to ensure the input is the same for each match\n"
+        "    // constraints. If we leave it any later the ties will have been\n"
+        "    // canonicalized\n"
+     << "    unsigned MatchResult;\n"
+     << "    if ((MatchResult = checkEarlyTargetMatchPredicate(Inst, "
+        "Operands)) != Match_Success) {\n"
+     << "      Inst.clear();\n";
+  OS << "      DEBUG_WITH_TYPE(\n";
+  OS << "          \"asm-matcher\",\n";
+  OS << "          dbgs() << \"Early target match predicate failed with diag "
+        "code \"\n";
+  OS << "                 << MatchResult << \"\\n\");\n";
+  if (ReportMultipleNearMisses) {
+    OS << "      EarlyPredicateNearMiss = "
+          "NearMissInfo::getMissedPredicate(MatchResult);\n";
+  } else {
+    OS << "      RetCode = MatchResult;\n"
+       << "      HadMatchOtherThanPredicate = true;\n"
+       << "      continue;\n";
+  }
+  OS << "    }\n\n";
+
+  if (ReportMultipleNearMisses) {
+    OS << "    // If we did not successfully match the operands, then we can't "
+          "convert to\n";
+    OS << "    // an MCInst, so bail out on this instruction variant now.\n";
+    OS << "    if (OperandNearMiss) {\n";
+    OS << "      // If the operand mismatch was the only problem, reprrt it as "
+          "a near-miss.\n";
+    OS << "      if (NearMisses && !FeaturesNearMiss && "
+          "!EarlyPredicateNearMiss) {\n";
+    OS << "        DEBUG_WITH_TYPE(\n";
+    OS << "            \"asm-matcher\",\n";
+    OS << "            dbgs()\n";
+    OS << "                << \"Opcode result: one mismatched operand, adding "
+          "near-miss\\n\");\n";
+    OS << "        NearMisses->push_back(OperandNearMiss);\n";
+    OS << "      } else {\n";
+    OS << "        DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Opcode result: "
+          "multiple \"\n";
+    OS << "                                                 \"types of "
+          "mismatch, so not \"\n";
+    OS << "                                                 \"reporting "
+          "near-miss\\n\");\n";
+    OS << "      }\n";
+    OS << "      continue;\n";
+    OS << "    }\n\n";
+  }
+
+  OS << "    if (matchingInlineAsm) {\n";
+  OS << "      convertToMapAndConstraints(it->ConvertFn, Operands);\n";
+  if (!ReportMultipleNearMisses) {
+    OS << "      if (!checkAsmTiedOperandConstraints(*this, it->ConvertFn, "
+          "Operands, ErrorInfo))\n";
+    OS << "        return Match_InvalidTiedOperand;\n";
+    OS << "\n";
+  }
+  OS << "      return Match_Success;\n";
+  OS << "    }\n\n";
+  OS << "    // We have selected a definite instruction, convert the parsed\n"
+     << "    // operands into the appropriate MCInst.\n";
+  if (HasOptionalOperands) {
+    OS << "    convertToMCInst(it->ConvertFn, Inst, it->Opcode, Operands,\n"
+       << "                    OptionalOperandsMask);\n";
+  } else {
+    OS << "    convertToMCInst(it->ConvertFn, Inst, it->Opcode, Operands);\n";
+  }
+  OS << "\n";
+
+  // Verify the instruction with the target-specific match predicate function.
+  OS << "    // We have a potential match. Check the target predicate to\n"
+     << "    // handle any context sensitive constraints.\n"
+     << "    if ((MatchResult = checkTargetMatchPredicate(Inst)) !="
+     << " Match_Success) {\n"
+     << "      DEBUG_WITH_TYPE(\"asm-matcher\",\n"
+     << "                      dbgs() << \"Target match predicate failed with "
+        "diag code \"\n"
+     << "                             << MatchResult << \"\\n\");\n"
+     << "      Inst.clear();\n";
+  if (ReportMultipleNearMisses) {
+    OS << "      LatePredicateNearMiss = "
+          "NearMissInfo::getMissedPredicate(MatchResult);\n";
+  } else {
+    OS << "      RetCode = MatchResult;\n"
+       << "      HadMatchOtherThanPredicate = true;\n"
+       << "      continue;\n";
+  }
+  OS << "    }\n\n";
+
+  if (ReportMultipleNearMisses) {
+    OS << "    int NumNearMisses = ((int)(bool)OperandNearMiss +\n";
+    OS << "                         (int)(bool)FeaturesNearMiss +\n";
+    OS << "                         (int)(bool)EarlyPredicateNearMiss +\n";
+    OS << "                         (int)(bool)LatePredicateNearMiss);\n";
+    OS << "    if (NumNearMisses == 1) {\n";
+    OS << "      // We had exactly one type of near-miss, so add that to the "
+          "list.\n";
+    OS << "      assert(!OperandNearMiss && \"OperandNearMiss was handled "
+          "earlier\");\n";
+    OS << "      DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Opcode result: "
+          "found one type of \"\n";
+    OS << "                                            \"mismatch, so "
+          "reporting a \"\n";
+    OS << "                                            \"near-miss\\n\");\n";
+    OS << "      if (NearMisses && FeaturesNearMiss)\n";
+    OS << "        NearMisses->push_back(FeaturesNearMiss);\n";
+    OS << "      else if (NearMisses && EarlyPredicateNearMiss)\n";
+    OS << "        NearMisses->push_back(EarlyPredicateNearMiss);\n";
+    OS << "      else if (NearMisses && LatePredicateNearMiss)\n";
+    OS << "        NearMisses->push_back(LatePredicateNearMiss);\n";
+    OS << "\n";
+    OS << "      continue;\n";
+    OS << "    } else if (NumNearMisses > 1) {\n";
+    OS << "      // This instruction missed in more than one way, so ignore "
+          "it.\n";
+    OS << "      DEBUG_WITH_TYPE(\"asm-matcher\", dbgs() << \"Opcode result: "
+          "multiple \"\n";
+    OS << "                                               \"types of mismatch, "
+          "so not \"\n";
+    OS << "                                               \"reporting "
+          "near-miss\\n\");\n";
+    OS << "      continue;\n";
+    OS << "    }\n";
+  }
+
+  // Call the post-processing function, if used.
+  StringRef InsnCleanupFn = AsmParser->getValueAsString("AsmParserInstCleanup");
+  if (!InsnCleanupFn.empty())
+    OS << "    " << InsnCleanupFn << "(Inst);\n";
+
+  if (HasDeprecation) {
+    OS << "    std::string Info;\n";
+    OS << "    if "
+          "(!getParser().getTargetParser().getTargetOptions()."
+          "MCNoDeprecatedWarn &&\n";
+    OS << "        MII.getDeprecatedInfo(Inst, getSTI(), Info)) {\n";
+    OS << "      SMLoc Loc = ((" << Target.getName()
+       << "Operand &)*Operands[0]).getStartLoc();\n";
+    OS << "      getParser().Warning(Loc, Info, std::nullopt);\n";
+    OS << "    }\n";
+  }
+
+  if (!ReportMultipleNearMisses) {
+    OS << "    if (!checkAsmTiedOperandConstraints(*this, it->ConvertFn, "
+          "Operands, ErrorInfo))\n";
+    OS << "      return Match_InvalidTiedOperand;\n";
+    OS << "\n";
+  }
+
+  OS << "    DEBUG_WITH_TYPE(\n";
+  OS << "        \"asm-matcher\",\n";
+  OS << "        dbgs() << \"Opcode result: complete match, selecting this "
+        "opcode\\n\");\n";
+  OS << "    return Match_Success;\n";
+  OS << "  }\n\n";
+
+  if (ReportMultipleNearMisses) {
+    OS << "  // No instruction variants matched exactly.\n";
+    OS << "  return Match_NearMisses;\n";
+  } else {
+    OS << "  // Okay, we had no match.  Try to return a useful error code.\n";
+    OS << "  if (HadMatchOtherThanPredicate || !HadMatchOtherThanFeatures)\n";
+    OS << "    return RetCode;\n\n";
+    OS << "  ErrorInfo = 0;\n";
+    OS << "  return Match_MissingFeature;\n";
+  }
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMnemonicSpellChecker(
+    CodeGenTarget const &Target, unsigned VariantCount) const {
+  OS << "static std::string " << Target.getName()
+     << "MnemonicSpellCheck(StringRef S, const FeatureBitset &FBS,"
+     << " unsigned VariantID) {\n";
+  if (!VariantCount)
+    OS << "  return \"\";";
+  else {
+    OS << "  const unsigned MaxEditDist = 2;\n";
+    OS << "  std::vector<StringRef> Candidates;\n";
+    OS << "  StringRef Prev = \"\";\n\n";
+
+    OS << "  // Find the appropriate table for this asm variant.\n";
+    OS << "  const MatchEntry *Start, *End;\n";
+    OS << "  switch (VariantID) {\n";
+    OS << "  default: llvm_unreachable(\"invalid variant!\");\n";
+    for (unsigned VC = 0; VC != VariantCount; ++VC) {
+      Record *AsmVariant = Target.getAsmParserVariant(VC);
+      int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
+      OS << "  case " << AsmVariantNo << ": Start = std::begin(MatchTable" << VC
+         << "); End = std::end(MatchTable" << VC << "); break;\n";
+    }
+    OS << "  }\n\n";
+    OS << "  for (auto I = Start; I < End; I++) {\n";
+    OS << "    // Ignore unsupported instructions.\n";
+    OS << "    const FeatureBitset &RequiredFeatures = "
+          "FeatureBitsets[I->RequiredFeaturesIdx];\n";
+    OS << "    if ((FBS & RequiredFeatures) != RequiredFeatures)\n";
+    OS << "      continue;\n";
+    OS << "\n";
+    OS << "    StringRef T = I->getMnemonic();\n";
+    OS << "    // Avoid recomputing the edit distance for the same string.\n";
+    OS << "    if (T.equals(Prev))\n";
+    OS << "      continue;\n";
+    OS << "\n";
+    OS << "    Prev = T;\n";
+    OS << "    unsigned Dist = S.edit_distance(T, false, MaxEditDist);\n";
+    OS << "    if (Dist <= MaxEditDist)\n";
+    OS << "      Candidates.push_back(T);\n";
+    OS << "  }\n";
+    OS << "\n";
+    OS << "  if (Candidates.empty())\n";
+    OS << "    return \"\";\n";
+    OS << "\n";
+    OS << "  std::string Res = \", did you mean: \";\n";
+    OS << "  unsigned i = 0;\n";
+    OS << "  for (; i < Candidates.size() - 1; i++)\n";
+    OS << "    Res += Candidates[i].str() + \", \";\n";
+    OS << "  return Res + Candidates[i].str() + \"?\";\n";
+  }
+  OS << "}\n";
+  OS << "\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMnemonicChecker(CodeGenTarget const &Target,
+                                                unsigned VariantCount,
+                                                bool HasMnemonicFirst,
+                                                bool HasMnemonicAliases) const {
+  OS << "static bool " << Target.getName()
+     << "CheckMnemonic(StringRef Mnemonic,\n";
+  OS << "                                "
+     << "const FeatureBitset &AvailableFeatures,\n";
+  OS << "                                "
+     << "unsigned VariantID) {\n";
+
+  if (!VariantCount) {
+    OS << "  return false;\n";
+  } else {
+    if (HasMnemonicAliases) {
+      OS << "  // Process all MnemonicAliases to remap the mnemonic.\n";
+      OS << "  applyMnemonicAliases(Mnemonic, AvailableFeatures, VariantID);";
+      OS << "\n\n";
+    }
+    OS << "  // Find the appropriate table for this asm variant.\n";
+    OS << "  const MatchEntry *Start, *End;\n";
+    OS << "  switch (VariantID) {\n";
+    OS << "  default: llvm_unreachable(\"invalid variant!\");\n";
+    for (unsigned VC = 0; VC != VariantCount; ++VC) {
+      Record *AsmVariant = Target.getAsmParserVariant(VC);
+      int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
+      OS << "  case " << AsmVariantNo << ": Start = std::begin(MatchTable" << VC
+         << "); End = std::end(MatchTable" << VC << "); break;\n";
+    }
+    OS << "  }\n\n";
+
+    OS << "  // Search the table.\n";
+    if (HasMnemonicFirst) {
+      OS << "  auto MnemonicRange = "
+            "std::equal_range(Start, End, Mnemonic, LessOpcode());\n\n";
+    } else {
+      OS << "  auto MnemonicRange = std::make_pair(Start, End);\n";
+      OS << "  unsigned SIndex = Mnemonic.empty() ? 0 : 1;\n";
+      OS << "  if (!Mnemonic.empty())\n";
+      OS << "    MnemonicRange = "
+         << "std::equal_range(Start, End, Mnemonic.lower(), LessOpcode());\n\n";
+    }
+
+    OS << "  if (MnemonicRange.first == MnemonicRange.second)\n";
+    OS << "    return false;\n\n";
+
+    OS << "  for (const MatchEntry *it = MnemonicRange.first, "
+       << "*ie = MnemonicRange.second;\n";
+    OS << "       it != ie; ++it) {\n";
+    OS << "    const FeatureBitset &RequiredFeatures =\n";
+    OS << "      FeatureBitsets[it->RequiredFeaturesIdx];\n";
+    OS << "    if ((AvailableFeatures & RequiredFeatures) == ";
+    OS << "RequiredFeatures)\n";
+    OS << "      return true;\n";
+    OS << "  }\n";
+    OS << "  return false;\n";
+  }
+  OS << "}\n";
+  OS << "\n";
+}
+
+void PrinterLLVM::asmMatcherEmitIncludes() const {
+  OS << "#include \"llvm/Support/Debug.h\"\n";
+  OS << "#include \"llvm/Support/Format.h\"\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMnemonicTable(
+    StringToOffsetTable &StringTable) const {
+  OS << "static const char MnemonicTable[] =\n";
+  StringTable.EmitString(OS);
+  OS << ";\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
+                                           AsmMatcherInfo const &Info,
+                                           StringToOffsetTable &StringTable,
+                                           unsigned VariantCount) const {
+  for (unsigned VC = 0; VC != VariantCount; ++VC) {
+    Record *AsmVariant = Target.getAsmParserVariant(VC);
+    int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
+
+    OS << "static const MatchEntry MatchTable" << VC << "[] = {\n";
+
+    for (const auto &MI : Info.Matchables) {
+      if (MI->AsmVariantID != AsmVariantNo)
+        continue;
+
+      // Store a pascal-style length byte in the mnemonic.
+      std::string LenMnemonic =
+          char(MI->Mnemonic.size()) + MI->Mnemonic.lower();
+      OS << "  { " << StringTable.GetOrAddStringOffset(LenMnemonic, false)
+         << " /* " << MI->Mnemonic << " */, " << Target.getInstNamespace()
+         << "::" << MI->getResultInst()->TheDef->getName() << ", "
+         << MI->ConversionFnKind << ", ";
+
+      // Write the required features mask.
+      OS << "AMFBS";
+      if (MI->RequiredFeatures.empty())
+        OS << "_None";
+      else
+        for (unsigned I = 0, E = MI->RequiredFeatures.size(); I != E; ++I)
+          OS << '_' << MI->RequiredFeatures[I]->TheDef->getName();
+
+      OS << ", { ";
+      ListSeparator LS;
+      for (const MatchableInfo::AsmOperand &Op : MI->AsmOperands)
+        OS << LS << Op.Class->Name;
+      OS << " }, },\n";
+    }
+
+    OS << "};\n\n";
+  }
+}
+
+void PrinterLLVM::asmMatcherEmitCustomOperandParsing(
+    unsigned MaxMask, CodeGenTarget &Target, AsmMatcherInfo const &Info,
+    StringRef ClassName, StringToOffsetTable &StringTable,
+    unsigned MaxMnemonicIndex, unsigned MaxFeaturesIndex, bool HasMnemonicFirst,
+    Record const &AsmParser) const {
+  // Emit the static custom operand parsing table;
+  emitNamespace("", true);
+  OS << "  struct OperandMatchEntry {\n";
+  OS << "    " << getMinimalTypeForRange(MaxMnemonicIndex) << " Mnemonic;\n";
+  OS << "    " << getMinimalTypeForRange(MaxMask) << " OperandMask;\n";
+  OS << "    "
+     << getMinimalTypeForRange(
+            std::distance(Info.Classes.begin(), Info.Classes.end()))
+     << " Class;\n";
+  OS << "    " << getMinimalTypeForRange(MaxFeaturesIndex)
+     << " RequiredFeaturesIdx;\n\n";
+  OS << "    StringRef getMnemonic() const {\n";
+  OS << "      return StringRef(MnemonicTable + Mnemonic + 1,\n";
+  OS << "                       MnemonicTable[Mnemonic]);\n";
+  OS << "    }\n";
+  OS << "  };\n\n";
+
+  OS << "  // Predicate for searching for an opcode.\n";
+  OS << "  struct LessOpcodeOperand {\n";
+  OS << "    bool operator()(const OperandMatchEntry &LHS, StringRef RHS) {\n";
+  OS << "      return LHS.getMnemonic()  < RHS;\n";
+  OS << "    }\n";
+  OS << "    bool operator()(StringRef LHS, const OperandMatchEntry &RHS) {\n";
+  OS << "      return LHS < RHS.getMnemonic();\n";
+  OS << "    }\n";
+  OS << "    bool operator()(const OperandMatchEntry &LHS,";
+  OS << " const OperandMatchEntry &RHS) {\n";
+  OS << "      return LHS.getMnemonic() < RHS.getMnemonic();\n";
+  OS << "    }\n";
+  OS << "  };\n";
+
+  emitNamespace("", false);
+
+  OS << "static const OperandMatchEntry OperandMatchTable["
+     << Info.OperandMatchInfo.size() << "] = {\n";
+
+  OS << "  /* Operand List Mnemonic, Mask, Operand Class, Features */\n";
+  for (const OperandMatchEntry &OMI : Info.OperandMatchInfo) {
+    const MatchableInfo &II = *OMI.MI;
+
+    OS << "  { ";
+
+    // Store a pascal-style length byte in the mnemonic.
+    std::string LenMnemonic = char(II.Mnemonic.size()) + II.Mnemonic.lower();
+    OS << StringTable.GetOrAddStringOffset(LenMnemonic, false) << " /* "
+       << II.Mnemonic << " */, ";
+
+    OS << OMI.OperandMask;
+    OS << " /* ";
+    ListSeparator LS;
+    for (int I = 0, E = 31; I != E; ++I)
+      if (OMI.OperandMask & (1 << I))
+        OS << LS << I;
+    OS << " */, ";
+
+    OS << OMI.CI->Name;
+
+    // Write the required features mask.
+    OS << ", AMFBS";
+    if (II.RequiredFeatures.empty())
+      OS << "_None";
+    else
+      for (unsigned I = 0, E = II.RequiredFeatures.size(); I != E; ++I)
+        OS << '_' << II.RequiredFeatures[I]->TheDef->getName();
+
+    OS << " },\n";
+  }
+  OS << "};\n\n";
+
+  // Emit the operand class switch to call the correct custom parser for
+  // the found operand class.
+  OS << "OperandMatchResultTy " << Target.getName() << ClassName << "::\n"
+     << "tryCustomParseOperand(OperandVector"
+     << " &Operands,\n                      unsigned MCK) {\n\n"
+     << "  switch(MCK) {\n";
+
+  for (const auto &CI : Info.Classes) {
+    if (CI.ParserMethod.empty())
+      continue;
+    OS << "  case " << CI.Name << ":\n"
+       << "    return " << CI.ParserMethod << "(Operands);\n";
+  }
+
+  OS << "  default:\n";
+  OS << "    return MatchOperand_NoMatch;\n";
+  OS << "  }\n";
+  OS << "  return MatchOperand_NoMatch;\n";
+  OS << "}\n\n";
+
+  // Emit the static custom operand parser. This code is very similar with
+  // the other matcher. Also use MatchResultTy here just in case we go for
+  // a better error handling.
+  OS << "OperandMatchResultTy " << Target.getName() << ClassName << "::\n"
+     << "MatchOperandParserImpl(OperandVector"
+     << " &Operands,\n                       StringRef Mnemonic,\n"
+     << "                       bool ParseForAllFeatures) {\n";
+
+  // Emit code to get the available features.
+  OS << "  // Get the current feature set.\n";
+  OS << "  const FeatureBitset &AvailableFeatures = "
+        "getAvailableFeatures();\n\n";
+
+  OS << "  // Get the next operand index.\n";
+  OS << "  unsigned NextOpNum = Operands.size()"
+     << (HasMnemonicFirst ? " - 1" : "") << ";\n";
+
+  // Emit code to search the table.
+  OS << "  // Search the table.\n";
+  if (HasMnemonicFirst) {
+    OS << "  auto MnemonicRange =\n";
+    OS << "    std::equal_range(std::begin(OperandMatchTable), "
+          "std::end(OperandMatchTable),\n";
+    OS << "                     Mnemonic, LessOpcodeOperand());\n\n";
+  } else {
+    OS << "  auto MnemonicRange = std::make_pair(std::begin(OperandMatchTable),"
+          " std::end(OperandMatchTable));\n";
+    OS << "  if (!Mnemonic.empty())\n";
+    OS << "    MnemonicRange =\n";
+    OS << "      std::equal_range(std::begin(OperandMatchTable), "
+          "std::end(OperandMatchTable),\n";
+    OS << "                       Mnemonic, LessOpcodeOperand());\n\n";
+  }
+
+  OS << "  if (MnemonicRange.first == MnemonicRange.second)\n";
+  OS << "    return MatchOperand_NoMatch;\n\n";
+
+  OS << "  for (const OperandMatchEntry *it = MnemonicRange.first,\n"
+     << "       *ie = MnemonicRange.second; it != ie; ++it) {\n";
+
+  OS << "    // equal_range guarantees that instruction mnemonic matches.\n";
+  OS << "    assert(Mnemonic == it->getMnemonic());\n\n";
+
+  // Emit check that the required features are available.
+  OS << "    // check if the available features match\n";
+  OS << "    const FeatureBitset &RequiredFeatures = "
+        "FeatureBitsets[it->RequiredFeaturesIdx];\n";
+  OS << "    if (!ParseForAllFeatures && (AvailableFeatures & "
+        "RequiredFeatures) != RequiredFeatures)\n";
+  OS << "      continue;\n\n";
+
+  // Emit check to ensure the operand number matches.
+  OS << "    // check if the operand in question has a custom parser.\n";
+  OS << "    if (!(it->OperandMask & (1 << NextOpNum)))\n";
+  OS << "      continue;\n\n";
+
+  // Emit call to the custom parser method
+  StringRef ParserName = AsmParser.getValueAsString("OperandParserMethod");
+  if (ParserName.empty())
+    ParserName = "tryCustomParseOperand";
+  OS << "    // call custom parse method to handle the operand\n";
+  OS << "    OperandMatchResultTy Result = " << ParserName
+     << "(Operands, it->Class);\n";
+  OS << "    if (Result != MatchOperand_NoMatch)\n";
+  OS << "      return Result;\n";
+  OS << "  }\n\n";
+
+  OS << "  // Okay, we had no match.\n";
+  OS << "  return MatchOperand_NoMatch;\n";
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchRegisterName(
+    Record const *AsmParser,
+    std::vector<StringMatcher::StringPair> const Matches) const {
+  OS << "static unsigned MatchRegisterName(StringRef Name) {\n";
+
+  bool IgnoreDuplicates =
+      AsmParser->getValueAsBit("AllowDuplicateRegisterNames");
+  StringMatcher("Name", Matches, OS, PRINTER_LANG_CPP)
+      .Emit(0, IgnoreDuplicates);
+
+  OS << "  return 0;\n";
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchRegisterAltName(
+    Record const *AsmParser,
+    std::vector<StringMatcher::StringPair> const Matches) const {
+  OS << "static unsigned MatchRegisterAltName(StringRef Name) {\n";
+
+  bool IgnoreDuplicates =
+      AsmParser->getValueAsBit("AllowDuplicateRegisterNames");
+  StringMatcher("Name", Matches, OS, PRINTER_LANG_CPP)
+      .Emit(0, IgnoreDuplicates);
+
+  OS << "  return 0;\n";
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMatchTokenString(
+    std::vector<StringMatcher::StringPair> const Matches) const {
+  OS << "static MatchClassKind matchTokenString(StringRef Name) {\n";
+
+  StringMatcher("Name", Matches, OS, PRINTER_LANG_CPP).Emit();
+
+  OS << "  return InvalidMatchClass;\n";
+  OS << "}\n\n";
+}
+
+void PrinterLLVM::asmMatcherEmitMnemonicAliasVariant(
+    std::vector<StringMatcher::StringPair> const &Cases,
+    unsigned Indent) const {
+  StringMatcher("Mnemonic", Cases, OS, PRINTER_LANG_CPP).Emit(Indent);
+}
+
+void PrinterLLVM::asmMatcherAppendMnemonicAlias(Record const *R,
+                                                std::string const &FeatureMask,
+                                                std::string &MatchCode) const {
+  if (!MatchCode.empty())
+    MatchCode += "else ";
+  MatchCode += "if (" + FeatureMask + ")\n";
+  MatchCode += "  Mnemonic = \"";
+  MatchCode += R->getValueAsString("ToMnemonic").lower();
+  MatchCode += "\";\n";
+}
+
+void PrinterLLVM::asmMatcherAppendMnemonic(Record const *R,
+                                           std::string &MatchCode) const {
+  if (!MatchCode.empty())
+    MatchCode += "else\n  ";
+  MatchCode += "Mnemonic = \"";
+  MatchCode += R->getValueAsString("ToMnemonic").lower();
+  MatchCode += "\";\n";
+}
+
+void PrinterLLVM::asmMatcherAppendMnemonicAliasEnd(
+    std::string &MatchCode) const {
+  MatchCode += "return;";
+}
+
+void PrinterLLVM::asmMatcherEmitApplyMnemonicAliasesI() const {
+  OS << "static void applyMnemonicAliases(StringRef &Mnemonic, "
+        "const FeatureBitset &Features, unsigned VariantID) {\n";
+  OS << "  switch (VariantID) {\n";
+}
+
+void PrinterLLVM::asmMatcherEmitApplyMnemonicAliasesII(
+    int AsmParserVariantNo) const {
+  OS << "  case " << AsmParserVariantNo << ":\n";
+}
+
+void PrinterLLVM::asmMatcherEmitApplyMnemonicAliasesIII() const {
+  OS << "    break;\n";
+}
+
+void PrinterLLVM::asmMatcherEmitApplyMnemonicAliasesIV() const {
+  OS << "  }\n";
+}
+
+void PrinterLLVM::asmMatcherEmitApplyMnemonicAliasesV() const { OS << "}\n\n"; }
+
+void PrinterLLVM::asmMatcherEmitSTFBitEnum(AsmMatcherInfo &Info) const {
+  SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(
+      Info.SubtargetFeatures, OS);
+}
+
+void PrinterLLVM::asmMatcherEmitComputeAssemblerAvailableFeatures(
+    AsmMatcherInfo &Info, StringRef const &ClassName) const {
+  SubtargetFeatureInfo::emitComputeAssemblerAvailableFeatures(
+      Info.Target.getName(), ClassName, "ComputeAvailableFeatures",
+      Info.SubtargetFeatures, OS);
 }
 
 } // end namespace llvm

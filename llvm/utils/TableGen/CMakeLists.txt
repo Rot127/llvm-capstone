@@ -49,6 +49,7 @@ add_tablegen(llvm-tblgen LLVM
   RegisterInfoEmitter.cpp
   SDNodeProperties.cpp
   SearchableTableEmitter.cpp
+  StringMatcher.cpp
   SubtargetEmitter.cpp
   SubtargetFeatureInfo.cpp
   TableGen.cpp

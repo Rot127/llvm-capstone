@@ -9,6 +9,7 @@
 #ifndef LLVM_UTILS_TABLEGEN_PRINTER_H
 #define LLVM_UTILS_TABLEGEN_PRINTER_H
 
+#include "AsmMatcherEmitterTypes.h"
 #include "AsmWriterInst.h"
 #include "CodeGenRegisters.h"
 #include "CodeGenTarget.h"
@@ -17,6 +18,7 @@
 #include "PrinterTypes.h"
 #include "RegisterInfoEmitterTypes.h"
 #include "SubtargetEmitterTypes.h"
+#include "SubtargetFeatureInfo.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -79,6 +81,20 @@ private:
   //           SubTargetInfo
   //----------------------------
   PredicateExpander *PE = nullptr;
+
+  //--------------------------
+  // Backend: AsmMatcher
+  //--------------------------
+
+  // Convert function stream.
+  // Write the convert function to a separate stream, so we can drop it after
+  // the enum. We'll build up the conversion handlers for the individual
+  // operand types opportunistically as we encounter them.
+  std::string *ConvertFnBody = new std::string;
+  raw_string_ostream *CvtOS = new raw_string_ostream(*ConvertFnBody);
+  // Operand lookup function stream.
+  std::string *OperandFnBody = new std::string;
+  raw_string_ostream *OpOS = new raw_string_ostream(*OperandFnBody);
 
 public:
   PrinterLLVM(formatted_raw_ostream &OS);
@@ -611,6 +627,9 @@ public:
                                                  unsigned NumFeatures,
                                                  unsigned NumProcs,
                                                  bool SchedModelHasItin) const;
+  virtual void asmMatcherEmitSTFBitEnum(AsmMatcherInfo &Info) const;
+  virtual void asmMatcherEmitComputeAssemblerAvailableFeatures(
+      AsmMatcherInfo &Info, StringRef const &ClassName) const;
 
   //---------------------------
   // Backend: InstrInfoEmitter
@@ -749,6 +768,144 @@ public:
       StringRef const &TargetName,
       std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
           &SubtargetFeatures) const;
+
+  //--------------------------
+  // Backend: AsmMatcher
+  //--------------------------
+
+  virtual void asmMatcherEmitSourceFileHeader(std::string const &Desc) const;
+  virtual void asmMatcherEmitDeclarations(bool HasOptionalOperands,
+                                          bool ReportMultipleNearMisses,
+                                          bool HasOperandInfos) const;
+  virtual void
+  asmMatcherEmitOperandDiagTypes(std::set<StringRef> const Types) const;
+
+  virtual void asmMatcherEmitGetSubtargetFeatureName(
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+          SubtargetFeatures) const;
+  void asmMatcherEmitConversionFunctionI(StringRef const &TargetName,
+                                         StringRef const &ClassName,
+                                         std::string const &TargetOperandClass,
+                                         bool HasOptionalOperands,
+                                         size_t MaxNumOperands) const;
+  virtual void
+  asmMatcherEmitConversionFunctionII(std::string const &EnumName,
+                                     StringRef const &AsmMatchConverter) const;
+  virtual void asmMatcherEmitConversionFunctionIII(
+      std::string const &EnumName, std::string const TargetOperandClass,
+      bool HasOptionalOperands, MatchableInfo::AsmOperand const &Op,
+      MatchableInfo::ResOperand const &OpInfo) const;
+  virtual void asmMatcherEmitConversionFunctionIV(std::string const &EnumName,
+                                                  int64_t Val) const;
+  virtual void asmMatcherEmitConversionFunctionV(std::string const &EnumName,
+                                                 std::string const &Reg) const;
+  virtual void asmMatcherEmitConversionFunctionVI() const;
+  virtual void asmMatcherWriteCvtOSToOS() const;
+  virtual void asmMatcherEmitOperandFunctionI(StringRef const &TargetName,
+                                              StringRef const &ClassName) const;
+  virtual void asmMatcherEmitOperandFunctionII(
+      std::string const &EnumName, MatchableInfo::AsmOperand const &Op,
+      MatchableInfo::ResOperand const &OpInfo) const;
+  virtual void
+  asmMatcherEmitOperandFunctionIII(std::string const &EnumName) const;
+  virtual void
+  asmMatcherEmitOperandFunctionIV(std::string const &EnumName) const;
+  virtual void asmMatcherEmitOperandFunctionV() const;
+  virtual void asmMatcherEmitTiedOperandEnum(
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const;
+  virtual void asmMatcherWriteOpOSToOS() const;
+  virtual void asmMatcherEmitTiedOpTable(
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const;
+  virtual void asmMatcherEmitTiedOpEmptyTable() const;
+  virtual void asmMatcherEmitOperandConvKindEnum(
+      SmallSetVector<CachedHashString, 16> OperandConversionKinds) const;
+  virtual void asmMatcherEmitInstrConvKindEnum(
+      SmallSetVector<CachedHashString, 16> InstructionConversionKinds) const;
+  virtual void asmMatcherEmitConversionTable(
+      size_t MaxRowLength,
+      std::vector<std::vector<uint8_t>> const ConversionTable,
+      SmallSetVector<CachedHashString, 16> InstructionConversionKinds,
+      SmallSetVector<CachedHashString, 16> OperandConversionKinds,
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const;
+  virtual void asmMatcherEmitMatchClassKindEnum(
+      std::forward_list<ClassInfo> const &Infos) const;
+  virtual void
+  asmMatcherEmitMatchClassDiagStrings(AsmMatcherInfo const &Info) const;
+  virtual void asmMatcherEmitRegisterMatchErrorFunc(AsmMatcherInfo &Info) const;
+  virtual void asmMatcherEmitIsSubclassI() const;
+  virtual bool asmMatcherEmitIsSubclassII(bool EmittedSwitch,
+                                          std::string const &Name) const;
+  virtual void asmMatcherEmitIsSubclassIII(StringRef const &Name) const;
+  virtual void
+  asmMatcherEmitIsSubclassIV(std::vector<StringRef> const &SuperClasses) const;
+  virtual void asmMatcherEmitIsSubclassV(bool EmittedSwitch) const;
+  virtual void asmMatcherEmitValidateOperandClass(AsmMatcherInfo &Info) const;
+  virtual void
+  asmMatcherEmitMatchClassKindNames(std::forward_list<ClassInfo> &Infos) const;
+  virtual void
+  asmMatcherEmitAsmTiedOperandConstraints(CodeGenTarget &Target,
+                                          AsmMatcherInfo &Info) const;
+  virtual std::string
+  getNameForFeatureBitset(const std::vector<Record *> &FeatureBitset) const;
+  virtual void asmMatcherEmitFeatureBitsetEnum(
+      std::vector<std::vector<Record *>> const FeatureBitsets) const;
+  virtual void asmMatcherEmitFeatureBitsets(
+      std::vector<std::vector<Record *>> const FeatureBitsets,
+      AsmMatcherInfo const &Info) const;
+  virtual void asmMatcherEmitMatchEntryStruct(
+      unsigned MaxMnemonicIndex, unsigned NumConverters, size_t MaxNumOperands,
+      std::vector<std::vector<Record *>> const FeatureBitsets,
+      AsmMatcherInfo const &Info) const;
+  virtual void asmMatcherEmitMatchFunction(
+      CodeGenTarget const &Target, Record const *AsmParser,
+      StringRef const &ClassName, bool HasMnemonicFirst,
+      bool HasOptionalOperands, bool ReportMultipleNearMisses,
+      bool HasMnemonicAliases, size_t MaxNumOperands, bool HasDeprecation,
+      unsigned int VariantCount) const;
+  virtual void asmMatcherEmitMnemonicSpellChecker(CodeGenTarget const &Target,
+                                                  unsigned VariantCount) const;
+  virtual void asmMatcherEmitMnemonicChecker(CodeGenTarget const &Target,
+                                             unsigned VariantCount,
+                                             bool HasMnemonicFirst,
+                                             bool HasMnemonicAliases) const;
+  virtual void asmMatcherEmitCustomOperandParsing(
+      unsigned MaxMask, CodeGenTarget &Target, AsmMatcherInfo const &Info,
+      StringRef ClassName, StringToOffsetTable &StringTable,
+      unsigned MaxMnemonicIndex, unsigned MaxFeaturesIndex,
+      bool HasMnemonicFirst, Record const &AsmParser) const;
+  virtual void asmMatcherEmitIncludes() const;
+  virtual void
+  asmMatcherEmitMnemonicTable(StringToOffsetTable &StringTable) const;
+  virtual void asmMatcherEmitMatchTable(CodeGenTarget const &Target,
+                                        AsmMatcherInfo const &Info,
+                                        StringToOffsetTable &StringTable,
+                                        unsigned VariantCount) const;
+  virtual void asmMatcherEmitMatchRegisterName(
+      Record const *AsmParser,
+      std::vector<StringMatcher::StringPair> const Matches) const;
+  virtual void asmMatcherEmitMatchTokenString(
+      std::vector<StringMatcher::StringPair> const Matches) const;
+  virtual void asmMatcherEmitMatchRegisterAltName(
+      Record const *AsmParser,
+      std::vector<StringMatcher::StringPair> const Matches) const;
+  virtual void asmMatcherEmitMnemonicAliasVariant(
+      std::vector<StringMatcher::StringPair> const &Cases,
+      unsigned Indent) const;
+  virtual void asmMatcherAppendMnemonicAlias(Record const *R,
+                                             std::string const &FeatureMask,
+                                             std::string &MatchCode) const;
+  virtual void asmMatcherAppendMnemonic(Record const *R,
+                                        std::string &MatchCode) const;
+  virtual void asmMatcherAppendMnemonicAliasEnd(std::string &MatchCode) const;
+  virtual void asmMatcherEmitApplyMnemonicAliasesI() const;
+  virtual void
+  asmMatcherEmitApplyMnemonicAliasesII(int AsmParserVariantNo) const;
+  virtual void asmMatcherEmitApplyMnemonicAliasesIII() const;
+  virtual void asmMatcherEmitApplyMnemonicAliasesIV() const;
+  virtual void asmMatcherEmitApplyMnemonicAliasesV() const;
 };
 
 //==============================
