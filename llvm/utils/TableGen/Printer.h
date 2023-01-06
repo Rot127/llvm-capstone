@@ -783,11 +783,10 @@ public:
   virtual void asmMatcherEmitGetSubtargetFeatureName(
       std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
           SubtargetFeatures) const;
-  void asmMatcherEmitConversionFunctionI(StringRef const &TargetName,
-                                         StringRef const &ClassName,
-                                         std::string const &TargetOperandClass,
-                                         bool HasOptionalOperands,
-                                         size_t MaxNumOperands) const;
+  virtual void asmMatcherEmitConversionFunctionI(
+      StringRef const &TargetName, StringRef const &ClassName,
+      std::string const &TargetOperandClass, bool HasOptionalOperands,
+      size_t MaxNumOperands) const;
   virtual void
   asmMatcherEmitConversionFunctionII(std::string const &EnumName,
                                      StringRef const &AsmMatchConverter) const;
@@ -921,6 +920,25 @@ class PrinterCapstone : public PrinterLLVM {
 public:
   using PrinterLLVM::PrinterLLVM;
   virtual void flushOS() const override { OS.flush(); }
+
+  //--------------------------
+  // Mapping printing
+  //--------------------------
+
+  void writeFile(std::string Filename, std::string const &Str) const;
+  void printInsnMapEntry(StringRef const &TargetName,
+                         std::unique_ptr<MatchableInfo> const &MI,
+                         raw_string_ostream &InsnMap) const;
+  void printInsnOpMapEntry(CodeGenTarget const &Target,
+                           std::unique_ptr<MatchableInfo> const &MI,
+                           raw_string_ostream &InsnOpMap) const;
+  void printInsnNameMapEnumEntry(StringRef const &TargetName,
+                                 std::unique_ptr<MatchableInfo> const &MI,
+                                 raw_string_ostream &InsnNameMap,
+                                 raw_string_ostream &InsnEnum) const;
+  void printFeatureEnumEntry(StringRef const &TargetName,
+                             std::unique_ptr<MatchableInfo> const &MI,
+                             raw_string_ostream &FeatureEnum) const;
 
   //--------------------------
   // General printing methods
@@ -1533,6 +1551,151 @@ public:
       StringRef const &TargetName,
       std::map<Record *, SubtargetFeatureInfo, LessRecordByID>
           &SubtargetFeatures) const override;
+
+  //--------------------------
+  // Backend: AsmMatcher
+  //--------------------------
+
+  void asmMatcherEmitSourceFileHeader(std::string const &Desc) const override;
+  void asmMatcherEmitDeclarations(bool HasOptionalOperands,
+                                  bool ReportMultipleNearMisses,
+                                  bool HasOperandInfos) const override;
+  void asmMatcherEmitOperandDiagTypes(
+      std::set<StringRef> const Types) const override;
+
+  void asmMatcherEmitGetSubtargetFeatureName(
+      std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+          SubtargetFeatures) const override;
+  void asmMatcherEmitConversionFunctionI(StringRef const &TargetName,
+                                         StringRef const &ClassName,
+                                         std::string const &TargetOperandClass,
+                                         bool HasOptionalOperands,
+                                         size_t MaxNumOperands) const override;
+  void asmMatcherEmitConversionFunctionII(
+      std::string const &EnumName,
+      StringRef const &AsmMatchConverter) const override;
+  void asmMatcherEmitConversionFunctionIII(
+      std::string const &EnumName, std::string const TargetOperandClass,
+      bool HasOptionalOperands, MatchableInfo::AsmOperand const &Op,
+      MatchableInfo::ResOperand const &OpInfo) const override;
+  void asmMatcherEmitConversionFunctionIV(std::string const &EnumName,
+                                          int64_t Val) const override;
+  void asmMatcherEmitConversionFunctionV(std::string const &EnumName,
+                                         std::string const &Reg) const override;
+  void asmMatcherEmitConversionFunctionVI() const override;
+  void asmMatcherWriteCvtOSToOS() const override;
+  void
+  asmMatcherEmitOperandFunctionI(StringRef const &TargetName,
+                                 StringRef const &ClassName) const override;
+  void asmMatcherEmitOperandFunctionII(
+      std::string const &EnumName, MatchableInfo::AsmOperand const &Op,
+      MatchableInfo::ResOperand const &OpInfo) const override;
+  void
+  asmMatcherEmitOperandFunctionIII(std::string const &EnumName) const override;
+  void
+  asmMatcherEmitOperandFunctionIV(std::string const &EnumName) const override;
+  void asmMatcherEmitOperandFunctionV() const override;
+  void asmMatcherEmitTiedOperandEnum(
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const override;
+  void asmMatcherWriteOpOSToOS() const override;
+  void asmMatcherEmitTiedOpTable(
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const override;
+  void asmMatcherEmitTiedOpEmptyTable() const override;
+  void asmMatcherEmitOperandConvKindEnum(
+      SmallSetVector<CachedHashString, 16> OperandConversionKinds)
+      const override;
+  void asmMatcherEmitInstrConvKindEnum(
+      SmallSetVector<CachedHashString, 16> InstructionConversionKinds)
+      const override;
+  void asmMatcherEmitConversionTable(
+      size_t MaxRowLength,
+      std::vector<std::vector<uint8_t>> const ConversionTable,
+      SmallSetVector<CachedHashString, 16> InstructionConversionKinds,
+      SmallSetVector<CachedHashString, 16> OperandConversionKinds,
+      std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+          TiedOperandsEnumMap) const override;
+  void asmMatcherEmitMatchClassKindEnum(
+      std::forward_list<ClassInfo> const &Infos) const override;
+  void asmMatcherEmitMatchClassDiagStrings(
+      AsmMatcherInfo const &Info) const override;
+  void
+  asmMatcherEmitRegisterMatchErrorFunc(AsmMatcherInfo &Info) const override;
+  void asmMatcherEmitIsSubclassI() const override;
+  bool asmMatcherEmitIsSubclassII(bool EmittedSwitch,
+                                  std::string const &Name) const override;
+  void asmMatcherEmitIsSubclassIII(StringRef const &Name) const override;
+  void asmMatcherEmitIsSubclassIV(
+      std::vector<StringRef> const &SuperClasses) const override;
+  void asmMatcherEmitIsSubclassV(bool EmittedSwitch) const override;
+  void asmMatcherEmitValidateOperandClass(AsmMatcherInfo &Info) const override;
+  void asmMatcherEmitMatchClassKindNames(
+      std::forward_list<ClassInfo> &Infos) const override;
+  void
+  asmMatcherEmitAsmTiedOperandConstraints(CodeGenTarget &Target,
+                                          AsmMatcherInfo &Info) const override;
+  std::string getNameForFeatureBitset(
+      const std::vector<Record *> &FeatureBitset) const override;
+  void asmMatcherEmitFeatureBitsetEnum(
+      std::vector<std::vector<Record *>> const FeatureBitsets) const override;
+  void asmMatcherEmitFeatureBitsets(
+      std::vector<std::vector<Record *>> const FeatureBitsets,
+      AsmMatcherInfo const &Info) const override;
+  void asmMatcherEmitMatchEntryStruct(
+      unsigned MaxMnemonicIndex, unsigned NumConverters, size_t MaxNumOperands,
+      std::vector<std::vector<Record *>> const FeatureBitsets,
+      AsmMatcherInfo const &Info) const override;
+  void asmMatcherEmitMatchFunction(
+      CodeGenTarget const &Target, Record const *AsmParser,
+      StringRef const &ClassName, bool HasMnemonicFirst,
+      bool HasOptionalOperands, bool ReportMultipleNearMisses,
+      bool HasMnemonicAliases, size_t MaxNumOperands, bool HasDeprecation,
+      unsigned int VariantCount) const override;
+  void asmMatcherEmitMnemonicSpellChecker(CodeGenTarget const &Target,
+                                          unsigned VariantCount) const override;
+  void asmMatcherEmitMnemonicChecker(CodeGenTarget const &Target,
+                                     unsigned VariantCount,
+                                     bool HasMnemonicFirst,
+                                     bool HasMnemonicAliases) const override;
+  void asmMatcherEmitCustomOperandParsing(
+      unsigned MaxMask, CodeGenTarget &Target, AsmMatcherInfo const &Info,
+      StringRef ClassName, StringToOffsetTable &StringTable,
+      unsigned MaxMnemonicIndex, unsigned MaxFeaturesIndex,
+      bool HasMnemonicFirst, Record const &AsmParser) const override;
+  void asmMatcherEmitIncludes() const override;
+  void
+  asmMatcherEmitMnemonicTable(StringToOffsetTable &StringTable) const override;
+  void asmMatcherEmitMatchTable(CodeGenTarget const &Target,
+                                AsmMatcherInfo const &Info,
+                                StringToOffsetTable &StringTable,
+                                unsigned VariantCount) const override;
+  void asmMatcherEmitMatchRegisterName(
+      Record const *AsmParser,
+      std::vector<StringMatcher::StringPair> const Matches) const override;
+  void asmMatcherEmitMatchTokenString(
+      std::vector<StringMatcher::StringPair> const Matches) const override;
+  void asmMatcherEmitMatchRegisterAltName(
+      Record const *AsmParser,
+      std::vector<StringMatcher::StringPair> const Matches) const override;
+  void asmMatcherEmitMnemonicAliasVariant(
+      std::vector<StringMatcher::StringPair> const &Cases,
+      unsigned Indent) const override;
+  void asmMatcherAppendMnemonicAlias(Record const *R,
+                                     std::string const &FeatureMask,
+                                     std::string &MatchCode) const override;
+  void asmMatcherAppendMnemonic(Record const *R,
+                                std::string &MatchCode) const override;
+  void asmMatcherAppendMnemonicAliasEnd(std::string &MatchCode) const override;
+  void asmMatcherEmitApplyMnemonicAliasesI() const override;
+  void
+  asmMatcherEmitApplyMnemonicAliasesII(int AsmParserVariantNo) const override;
+  void asmMatcherEmitApplyMnemonicAliasesIII() const override;
+  void asmMatcherEmitApplyMnemonicAliasesIV() const override;
+  void asmMatcherEmitApplyMnemonicAliasesV() const override;
+  void asmMatcherEmitSTFBitEnum(AsmMatcherInfo &Info) const override;
+  void asmMatcherEmitComputeAssemblerAvailableFeatures(
+      AsmMatcherInfo &Info, StringRef const &ClassName) const override;
 };
 
 } // end namespace llvm

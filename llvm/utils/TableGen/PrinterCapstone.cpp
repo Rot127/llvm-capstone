@@ -11,7 +11,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Printer.h"
+#include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/TableGen/TableGenBackend.h"
 #include <regex>
 
@@ -42,9 +45,13 @@ void PrinterCapstone::emitNamespace(std::string const &Name, bool Begin,
 /// `#endif // <Name>`
 /// Used to control inclusion of a code block via a macro definition.
 void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
-                                        bool Newline,
-                                        bool UndefAtEnd) const {
-  if (Name == "GET_REGINFO_TARGET_DESC" || Name == "GET_REGINFO_HEADER") {
+                                        bool Newline, bool UndefAtEnd) const {
+  if (Name == "GET_REGINFO_TARGET_DESC" || Name == "GET_REGINFO_HEADER" ||
+      Name == "GET_MNEMONIC_CHECKER" || Name == "GET_MNEMONIC_SPELL_CHECKER" ||
+      Name == "GET_MATCHER_IMPLEMENTATION" ||
+      Name == "GET_SUBTARGET_FEATURE_NAME" || Name == "GET_REGISTER_MATCHER" ||
+      Name == "GET_OPERAND_DIAGNOSTIC_TYPES" ||
+      Name == "GET_ASSEMBLER_HEADER") {
     return;
   }
   if (Begin) {
@@ -1640,8 +1647,8 @@ void PrinterCapstone::subtargetEmitFeatureEnum(
   OS << "};\n";
 }
 
-void PrinterCapstone::subtargetEmitGetSTIMacro(StringRef const &Value,
-                                           StringRef const &Attribute) const {
+void PrinterCapstone::subtargetEmitGetSTIMacro(
+    StringRef const &Value, StringRef const &Attribute) const {
   // Some features default to true, with values set to false if enabled.
   const char *Default = Value == "false" ? "true" : "false";
 
@@ -1654,7 +1661,7 @@ void PrinterCapstone::subtargetEmitGetSTIMacro(StringRef const &Value,
 }
 
 void PrinterCapstone::subtargetEmitHwModes(CodeGenHwModes const &CGH,
-                                       std::string const &ClassName) const {
+                                           std::string const &ClassName) const {
   OS << "unsigned " << ClassName << "::getHwMode() const {\n";
   for (unsigned M = 1, NumModes = CGH.getNumModeIds(); M != NumModes; ++M) {
     const HwMode &HM = CGH.getMode(M);
@@ -1672,10 +1679,9 @@ void PrinterCapstone::subtargetEmitFeatureKVHeader(
      << "FeatureKV[] = {\n";
 }
 
-void PrinterCapstone::subtargetEmitFeatureKVPartI(std::string const &Target,
-                                              StringRef const &CommandLineName,
-                                              StringRef const &Name,
-                                              StringRef const &Desc) const {
+void PrinterCapstone::subtargetEmitFeatureKVPartI(
+    std::string const &Target, StringRef const &CommandLineName,
+    StringRef const &Name, StringRef const &Desc) const {
   // Emit as { "feature", "description", { featureEnum }, { i1 , i2 , ... , in }
   OS << "  { "
      << "\"" << CommandLineName << "\", "
@@ -1697,7 +1703,8 @@ void PrinterCapstone::subtargetEmitPrintFeatureMask(
 
 void PrinterCapstone::subtargetEmitFeatureKVEnd() const { OS << "};\n"; }
 
-void PrinterCapstone::subtargetEmitCPUKVHeader(std::string const &Target) const {
+void PrinterCapstone::subtargetEmitCPUKVHeader(
+    std::string const &Target) const {
   OS << "// Sorted (by key) array of values for CPU subtype.\n"
      << "extern const llvm::SubtargetSubTypeKV " << Target
      << "SubTypeKV[] = {\n";
@@ -1775,8 +1782,8 @@ void PrinterCapstone::subtargetEmitFunctionalItinaryUnits(
   }
 }
 
-std::string const
-PrinterCapstone::subtargetGetBeginStageTable(std::string const &TargetName) const {
+std::string const PrinterCapstone::subtargetGetBeginStageTable(
+    std::string const &TargetName) const {
   return "\nextern const llvm::InstrStage " + TargetName + "Stages[] = {\n" +
          "  { 0, 0, 0, llvm::InstrStage::Required }, // No itinerary\n";
 }
@@ -1787,8 +1794,8 @@ std::string const PrinterCapstone::subtargetGetBeginOperandCycleTable(
          "  0, // No itinerary\n";
 }
 
-std::string const
-PrinterCapstone::subtargetGetBeginBypassTable(std::string const &TargetName) const {
+std::string const PrinterCapstone::subtargetGetBeginBypassTable(
+    std::string const &TargetName) const {
   return "extern const unsigned " + TargetName + "ForwardingPaths[] = {\n" +
          " 0, // No itinerary\n";
 }
@@ -1808,10 +1815,9 @@ std::string const PrinterCapstone::subtargetGetEndBypassTable() const {
 // subtargetFormItineraryStageString - Compose a string containing the stage
 // data initialization for the specified itinerary.  N is the number
 // of stages.
-void PrinterCapstone::subtargetFormItineraryStageString(std::string const &Name,
-                                                    Record *ItinData,
-                                                    std::string &ItinString,
-                                                    unsigned &NStages) const {
+void PrinterCapstone::subtargetFormItineraryStageString(
+    std::string const &Name, Record *ItinData, std::string &ItinString,
+    unsigned &NStages) const {
   // Get states list
   RecVec StageList = ItinData->getValueAsListOfDefs("Stages");
 
@@ -1887,14 +1893,17 @@ void PrinterCapstone::subtargetFormItineraryBypassString(
 
 std::string
 PrinterCapstone::subtargetGetStageEntryPartI(std::string const &ItinStageString,
-                                         unsigned StageCount) const {
+                                             unsigned StageCount) const {
   return ItinStageString + ", // " + itostr(StageCount);
 }
-std::string PrinterCapstone::subtargetGetStageEntryPartII(unsigned StageCount,
-                                                      unsigned NStages) const {
+std::string
+PrinterCapstone::subtargetGetStageEntryPartII(unsigned StageCount,
+                                              unsigned NStages) const {
   return "-" + itostr(StageCount + NStages - 1);
 }
-std::string PrinterCapstone::subtargetGetStageEntryPartIII() const { return "\n"; }
+std::string PrinterCapstone::subtargetGetStageEntryPartIII() const {
+  return "\n";
+}
 
 std::string PrinterCapstone::subtargetGetOperandCycleEntryPartI(
     std::string const &ItinOperandCycleString) const {
@@ -2098,7 +2107,9 @@ void PrinterCapstone::subtargetEmitMCExtraProcInfoTableHeader(
      << "ExtraInfo = {\n  ";
 }
 
-void PrinterCapstone::subtargetEmitMCExtraProcInfoTableEnd() const { OS << "};\n"; }
+void PrinterCapstone::subtargetEmitMCExtraProcInfoTableEnd() const {
+  OS << "};\n";
+}
 
 void PrinterCapstone::subtargetEmitReorderBufferSize(
     int64_t ReorderBufferSize) const {
@@ -2169,7 +2180,9 @@ void PrinterCapstone::subtargetEmitMCProcResourceDescHeader(
      << "  {\"InvalidUnit\", 0, 0, 0, 0},\n";
 }
 
-void PrinterCapstone::subtargetEmitMCProcResourceDescEnd() const { OS << "};\n"; }
+void PrinterCapstone::subtargetEmitMCProcResourceDescEnd() const {
+  OS << "};\n";
+}
 
 void PrinterCapstone::subtargetEmitMCProcResourceDesc(
     Record const *PRDef, Record const *SuperDef,
@@ -2196,8 +2209,8 @@ void PrinterCapstone::subtargetEmitMCProcResourceDesc(
 // value defined in the C++ header. The Record is null if the processor does not
 // define a model.
 void PrinterCapstone::subtargetEmitProcessorProp(Record const *R,
-                                             StringRef const Name,
-                                             char Separator) const {
+                                                 StringRef const Name,
+                                                 char Separator) const {
   OS << "  ";
   int const V = R ? R->getValueAsInt(Name) : -1;
   if (V >= 0)
@@ -2263,8 +2276,8 @@ void PrinterCapstone::subtargetEmitSchedClassSwitch() const {
   OS << "  switch (SchedClass) {\n";
 }
 
-void PrinterCapstone::subtargetEmitSchedClassCase(unsigned VC,
-                                              std::string const &SCName) const {
+void PrinterCapstone::subtargetEmitSchedClassCase(
+    unsigned VC, std::string const &SCName) const {
   OS << "  case " << VC << ": // " << SCName << '\n';
 }
 
@@ -2338,7 +2351,9 @@ void PrinterCapstone::subtargetEmitPredicates(
   OS << Buffer;
 }
 
-void PrinterCapstone::subtargetEmitProcTransitionEnd() const { OS << "    }\n"; }
+void PrinterCapstone::subtargetEmitProcTransitionEnd() const {
+  OS << "    }\n";
+}
 
 void PrinterCapstone::subtargetEmitSchedClassCaseEnd(
     CodeGenSchedClass const &SC) const {
@@ -2347,7 +2362,9 @@ void PrinterCapstone::subtargetEmitSchedClassCaseEnd(
   OS << "    break;\n";
 }
 
-void PrinterCapstone::subtargetEmitSchedClassSwitchEnd() const { OS << "  };\n"; }
+void PrinterCapstone::subtargetEmitSchedClassSwitchEnd() const {
+  OS << "  };\n";
+}
 
 // Used by method `SubtargetEmitter::emitSchedModelHelpersImpl()` to generate
 // epilogue code for the auto-generated helper.
@@ -2475,14 +2492,16 @@ void PrinterCapstone::subtargetEmitDFASubtargetInfoImpl(
   OS << ") {}\n\n";
 }
 
-void PrinterCapstone::subtargetEmitDFAPacketizerClassEnd() const { OS << "};\n"; }
+void PrinterCapstone::subtargetEmitDFAPacketizerClassEnd() const {
+  OS << "};\n";
+}
 
 void PrinterCapstone::subtargetEmitSTICtor() const {
   OS << "#include \"llvm/CodeGen/TargetSchedule.h\"\n\n";
 }
 
-void PrinterCapstone::subtargetEmitExternKVArrays(std::string const &TargetName,
-                                              bool SchedModelsHasItin) const {
+void PrinterCapstone::subtargetEmitExternKVArrays(
+    std::string const &TargetName, bool SchedModelsHasItin) const {
   OS << "extern const llvm::SubtargetFeatureKV " << TargetName
      << "FeatureKV[];\n";
   OS << "extern const llvm::SubtargetSubTypeKV " << TargetName
@@ -2502,10 +2521,10 @@ void PrinterCapstone::subtargetEmitExternKVArrays(std::string const &TargetName,
 }
 
 void PrinterCapstone::subtargetEmitClassDefs(std::string const &TargetName,
-                                         std::string const &ClassName,
-                                         unsigned NumFeatures,
-                                         unsigned NumProcs,
-                                         bool SchedModelsHasItin) const {
+                                             std::string const &ClassName,
+                                             unsigned NumFeatures,
+                                             unsigned NumProcs,
+                                             bool SchedModelsHasItin) const {
   OS << ClassName << "::" << ClassName << "(const Triple &TT, StringRef CPU, "
      << "StringRef TuneCPU, StringRef FS)\n"
      << "  : TargetSubtargetInfo(TT, CPU, TuneCPU, FS, ";
@@ -2690,15 +2709,16 @@ void PrinterCapstone::instrInfoEmitOperandInfoTabe(
   OS << "};\n";
 }
 
-void PrinterCapstone::instrInfoEmitMCInstrDescHdr(std::string TargetName) const {
+void PrinterCapstone::instrInfoEmitMCInstrDescHdr(
+    std::string TargetName) const {
   OS << "\nextern const MCInstrDesc " << TargetName << "Insts[] = {\n";
 }
 
 void PrinterCapstone::instrInfoEmitMCInstrDescEnd() const { OS << "};\n\n"; }
 
 void PrinterCapstone::instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
-                                      CodeGenInstruction const &Inst,
-                                      unsigned Num, int MinOperands) const {
+                                          CodeGenInstruction const &Inst,
+                                          unsigned Num, int MinOperands) const {
   OS << "  { ";
   OS << Num << ",\t" << MinOperands << ",\t" << Inst.Operands.NumDefs << ",\t"
      << Inst.TheDef->getValueAsInt("Size") << ",\t"
@@ -2784,8 +2804,8 @@ void PrinterCapstone::instrInfoEmitOperandInfo(
     OS << "OperandInfo" << OpInfo.find(OperandInfo)->second;
 }
 
-void PrinterCapstone::instrInfoEmitRecordEnd(unsigned InstNum,
-                                         std::string const &InstName) const {
+void PrinterCapstone::instrInfoEmitRecordEnd(
+    unsigned InstNum, std::string const &InstName) const {
   OS << " },  // Inst #" << InstNum << " = " << InstName << "\n";
 }
 
@@ -2869,7 +2889,8 @@ void PrinterCapstone::instrInfoEmitMCInstrInfoInitRoutine(
   OS << NumberedInstrSize << ");\n}\n\n";
 }
 
-void PrinterCapstone::instrInfoEmitClassStruct(std::string const &ClassName) const {
+void PrinterCapstone::instrInfoEmitClassStruct(
+    std::string const &ClassName) const {
   OS << "struct " << ClassName << " : public TargetInstrInfo {\n"
      << "  explicit " << ClassName
      << "(int CFSetupOpcode = -1, int CFDestroyOpcode = -1, int CatchRetOpcode "
@@ -2878,9 +2899,9 @@ void PrinterCapstone::instrInfoEmitClassStruct(std::string const &ClassName) con
   OS << "\n};\n";
 }
 
-void PrinterCapstone::instrInfoEmitTIIHelperMethod(StringRef const &TargetName,
-                                               Record const *Rec,
-                                               bool ExpandDefinition) const {
+void PrinterCapstone::instrInfoEmitTIIHelperMethod(
+    StringRef const &TargetName, Record const *Rec,
+    bool ExpandDefinition) const {
   OS << (ExpandDefinition ? "" : "static ") << "bool ";
   if (ExpandDefinition)
     OS << TargetName << "InstrInfo::";
@@ -2985,7 +3006,7 @@ void PrinterCapstone::instrInfoEmitOpTypeEnumPartI() const {
 }
 
 void PrinterCapstone::instrInfoEmitOpTypeEnumPartII(StringRef const &OpName,
-                                                unsigned EnumVal) const {
+                                                    unsigned EnumVal) const {
   OS << "  " << OpName << " = " << EnumVal << ",\n";
 }
 
@@ -3068,7 +3089,7 @@ void PrinterCapstone::instrInfoEmitGetOpMemSizeTbl(
 
 std::string
 PrinterCapstone::instrInfoGetInstMapEntry(StringRef const &Namespace,
-                                      StringRef const &InstrName) const {
+                                          StringRef const &InstrName) const {
   return Namespace.str() + "::" + InstrName.str();
 }
 
@@ -3130,7 +3151,7 @@ void PrinterCapstone::instrInfoEmitGetLogicalOpIdx() const {
 
 std::string
 PrinterCapstone::instrInfoGetOpTypeListEntry(StringRef const &Namespace,
-                                         StringRef const &OpName) const {
+                                             StringRef const &OpName) const {
   return Namespace.str() + "::OpTypes::" + OpName.str();
 }
 
@@ -3191,7 +3212,8 @@ void PrinterCapstone::instrInfoEmitDeclareMCInstFeatureClasses() const {
   OS << "class FeatureBitset;\n\n";
 }
 
-void PrinterCapstone::instrInfoEmitPredFcnDecl(RecVec const &TIIPredicates) const {
+void PrinterCapstone::instrInfoEmitPredFcnDecl(
+    RecVec const &TIIPredicates) const {
   for (const Record *Rec : TIIPredicates) {
     OS << "bool " << Rec->getValueAsString("FunctionName")
        << "(const MCInst &MI);\n";
@@ -3202,7 +3224,7 @@ void PrinterCapstone::instrInfoEmitPredFcnDecl(RecVec const &TIIPredicates) cons
 }
 
 void PrinterCapstone::instrInfoEmitPredFcnImpl(StringRef const &TargetName,
-                                           RecVec const &TIIPredicates) {
+                                               RecVec const &TIIPredicates) {
   initNewPE(TargetName);
   PE->setExpandForMC(true);
   for (const Record *Rec : TIIPredicates) {
@@ -3233,14 +3255,6 @@ void PrinterCapstone::instrInfoEmitEmitSTFNameTable(
   OS << "#ifndef NDEBUG\n";
   SubtargetFeatureInfo::emitNameTable(SubtargetFeatures, OS);
   OS << "#endif // NDEBUG\n\n";
-}
-
-static std::string
-getNameForFeatureBitset(const std::vector<Record *> &FeatureBitset) {
-  std::string Name = "CEFBS";
-  for (const auto &Feature : FeatureBitset)
-    Name += ("_" + Feature->getName()).str();
-  return Name;
 }
 
 void PrinterCapstone::instrInfoEmitFeatureBitsEnum(
@@ -3362,8 +3376,8 @@ void PrinterCapstone::instrInfoEmitEnums(
 }
 
 void PrinterCapstone::instrInfoEmitTIIPredicates(StringRef const &TargetName,
-                                             RecVec const &TIIPredicates,
-                                             bool ExpandDefinition) {
+                                                 RecVec const &TIIPredicates,
+                                                 bool ExpandDefinition) {
   initNewPE(TargetName);
   PE->setExpandForMC(false);
 
@@ -3380,4 +3394,446 @@ void PrinterCapstone::instrInfoEmitComputeAssemblerAvailableFeatures(
       TargetName, "", "computeAvailableFeatures", SubtargetFeatures, OS);
 }
 
+//--------------------------
+// Backend: AsmMatcher
+//--------------------------
+
+static std::string getImplicitUses(StringRef const &TargetName,
+                                   CodeGenInstruction const *Inst) {
+  std::string Flags = "{ ";
+  for (Record const *U : Inst->ImplicitUses) {
+    assert(U->isSubClassOf("Register"));
+    Flags += TargetName.str() + "_REG_" + U->getName().str() + ", ";
+  }
+  Flags += "0 }";
+  return Flags;
+}
+
+static std::string getImplicitDefs(StringRef const &TargetName,
+                                   CodeGenInstruction const *Inst) {
+  std::string Flags = "{ ";
+  for (Record const *U : Inst->ImplicitDefs) {
+    assert(U->isSubClassOf("Register"));
+    Flags += TargetName.str() + "_REG_" + U->getName().str() + ", ";
+  }
+  Flags += "0 }";
+  return Flags;
+}
+
+static std::string getReqFeatures(StringRef const &TargetName,
+                                  std::unique_ptr<MatchableInfo> const &MI) {
+  std::string Flags = "{ ";
+  CodeGenInstruction const *Inst = MI->getResultInst();
+  std::string Mn = MI->Mnemonic.upper();
+  // The debug if
+  if (Inst->isBranch && !Inst->isCall) {
+    Flags += TargetName.str() + "_GRP_JUMP, ";
+  }
+  if (Inst->isCall) {
+    Flags += TargetName.str() + "_GRP_CALL, ";
+  }
+  for (const auto &OpInfo : Inst->Operands.OperandList) {
+    if (OpInfo.OperandType == "MCOI::OPERAND_PCREL" &&
+        (Inst->isBranch || Inst->isIndirectBranch || Inst->isCall)) {
+      Flags += TargetName.str() + "_GRP_BRANCH_RELATIVE, ";
+    }
+  }
+  // The group flags <ARCH>_GRP_PRIVILEGE and <ARCH>_GRP_INT (interrupt) are not
+  // handled here. LLVM does not provide this info.
+  for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
+    Flags +=
+        TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str() + ", ";
+  }
+  Flags += "0 }";
+  return Flags;
+}
+
+void PrinterCapstone::printInsnMapEntry(
+    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
+    raw_string_ostream &InsnMap) const {
+  CodeGenInstruction const *Inst = MI->getResultInst();
+  InsnMap << "{\n";
+  InsnMap.indent(2) << TargetName << "_" << Inst->TheDef->getName();
+  InsnMap << ", " << TargetName << "_INS_" << MI->Mnemonic.upper() << ",\n";
+  InsnMap.indent(2) << "#ifndef CAPSTONE_DIET\n";
+  InsnMap.indent(4) << getImplicitUses(TargetName, Inst) << ", ";
+  InsnMap << getImplicitDefs(TargetName, Inst) << ", ";
+  InsnMap << getReqFeatures(TargetName, MI) << ", ";
+  InsnMap << (Inst->isBranch ? "1" : "0") << ", ";
+  InsnMap << (Inst->isIndirectBranch ? "1" : "0") << "\n";
+  InsnMap.indent(2) << "#endif\n";
+  InsnMap << "},\n";
+}
+
+static std::string getCSAccess(short Access) {
+  if (Access == 1)
+    return "CS_AC_READ";
+  else if (Access == 2)
+    return "CS_AC_WRITE";
+  else if (Access == 3)
+    return "CS_AC_READ | CS_AC_WRITE";
+  else
+    PrintFatalNote("Invalid access flags set.");
+}
+
+static std::string getCSOperandType(Record const *OpRec) {
+  std::string OperandType;
+  if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
+    OperandType = std::string(OpRec->getValueAsString("OperandType"));
+  else if (OpRec->isSubClassOf("RegisterClass") ||
+           OpRec->isSubClassOf("PointerLikeRegClass"))
+    OperandType = "OPERAND_REGISTER";
+  else
+    return "";
+  if (OperandType == "OPERAND_UNKNOWN") {
+    if (OpRec->getValueAsDef("Type")->getValueAsInt("Size") == 0)
+      // Pseudo type
+      return "";
+    OperandType = "OPERAND_IMMEDIATE";
+  }
+  if (OperandType == "OPERAND_PCREL" || OperandType == "OPERAND_IMMEDIATE")
+    OperandType = "CS_OP_IMM";
+  else if (OperandType == "OPERAND_MEMORY")
+    OperandType = "CS_OP_MEM";
+  else if (OperandType == "OPERAND_REGISTER")
+    OperandType = "CS_OP_REG";
+  // Arch dependent special Op types
+  else if (OperandType == "OPERAND_VPRED_N" || OperandType == "OPERAND_VPRED_R")
+    return "";
+  else
+    PrintFatalNote("Unhandled OperandType: " + OperandType);
+  return OperandType;
+}
+
+void PrinterCapstone::printInsnOpMapEntry(
+    CodeGenTarget const &Target, std::unique_ptr<MatchableInfo> const &MI,
+    raw_string_ostream &InsnOpMap) const {
+
+  typedef struct OpData {
+    Record *Rec;
+    std::string OpAsm;
+    std::string OpType;
+    unsigned
+        Access; ///< 0b00 = unkown, 0b01 = In, 0b10 = Out, 0b11 = In and Out
+    std::string str() const {
+      return "Asm: " + OpAsm + " Type: " + OpType +
+             " Access: " + std::to_string(Access);
+    }
+  } OpData;
+
+  StringRef TargetName = Target.getName();
+  CodeGenInstruction const *Inst = MI->getResultInst();
+  DagInit *InDI = Inst->TheDef->getValueAsDag("InOperandList");
+  DagInit *OutDI = Inst->TheDef->getValueAsDag("OutOperandList");
+  unsigned NumDefs = OutDI->getNumArgs();
+
+  // Check if op is in in or out operands
+  unsigned E = InDI->getNumArgs() + OutDI->getNumArgs();
+  bool isOutOp;
+  std::vector<OpData> InsOps;
+  // Interate over every In and Out operand and get its Def.
+  for (unsigned I = 0; I != E; ++I) {
+    Init *ArgInit;
+    StringRef ArgName;
+    isOutOp = I < NumDefs;
+    if (isOutOp) {
+      ArgInit = OutDI->getArg(I);
+      ArgName = OutDI->getArgNameStr(I);
+    } else {
+      ArgInit = InDI->getArg(I - NumDefs);
+      ArgName = InDI->getArgNameStr(I - NumDefs);
+    }
+    DagInit *SubArgDag = dyn_cast<DagInit>(ArgInit);
+    if (SubArgDag)
+      ArgInit = SubArgDag->getOperator();
+    DefInit *Arg = dyn_cast<DefInit>(ArgInit);
+    Record *Rec = Arg->getDef();
+
+    // Determine Operand type
+    std::string OperandType = getCSOperandType(Rec);
+    if (OperandType == "")
+      continue;
+
+    // Check if Operand was already seen before (as In or Out operand).
+    // If so update its access flags.
+    bool OpExists = false;
+    for (OpData &OD : InsOps) {
+      if (OD.OpAsm == ArgName ||
+          // ARM way of marking registers which are IN and OUT
+          OD.OpAsm == (ArgName.str() + "_src") ||
+          OD.OpAsm + "_src" == ArgName.str()) {
+        OpExists = true;
+        OD.Access |= isOutOp ? 2 : 1;
+        break;
+      }
+    }
+    if (!OpExists) {
+      unsigned flag = isOutOp ? 2 : 1;
+      OpData OD = {Rec, ArgName.str(), OperandType, flag};
+      InsOps.emplace_back(OD);
+    }
+  }
+
+  if (InsOps.size() > 7) {
+    for (OpData const &OD : InsOps) {
+      PrintNote(OD.str());
+      OD.Rec->dump();
+    }
+    PrintFatalNote("Inst has more then 7 operands: " + Inst->AsmString);
+  }
+  // Write the C struct of the Instruction operands.
+  InsnOpMap << "{ /* " + TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
+                   Inst->TheDef->getName() + " */\n";
+  for (OpData const &OD : InsOps) {
+    InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
+                               " }, /* " + OD.OpAsm + " */\n";
+  }
+  InsnOpMap.indent(2) << "{ 0 }\n";
+  InsnOpMap << "},\n";
+}
+
+void PrinterCapstone::printInsnNameMapEnumEntry(
+    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
+    raw_string_ostream &InsnNameMap, raw_string_ostream &InsnEnum) const {
+  static std::set<std::string> CSInsn;
+  StringRef Mnemonic = MI->Mnemonic;
+  if (CSInsn.find(Mnemonic.str()) != CSInsn.end())
+    // Instruction already emitted.
+    return;
+  std::string EnumName = TargetName.str() + "_INS_" + Mnemonic.upper();
+  CSInsn.emplace(Mnemonic);
+
+  InsnNameMap.indent(2) << "\"" + Mnemonic + "\", // " + EnumName + "\n";
+  InsnEnum.indent(2) << EnumName + ",\n";
+}
+
+void PrinterCapstone::printFeatureEnumEntry(
+    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
+    raw_string_ostream &FeatureEnum) const {
+  static std::set<std::string> Features;
+  
+  for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
+    std::string Feature = STF->TheDef->getName().str();
+    if (Features.find(Feature) != Features.end())
+      continue;
+    Features.emplace(Feature);
+    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str() + ",\n";
+  }
+}
+
+static void addHeader(raw_string_ostream &InsnMap,
+                      raw_string_ostream &InsnOpMap,
+                      raw_string_ostream &InsnNameMap,
+                      raw_string_ostream &InsnEnum) {
+  std::string HeaderComment =
+      "/* Capstone Disassembly Engine, https://www.capstone-engine.org */\n"
+      "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2019 */\n"
+      "/* By Rot127 <unisono@quyllur.org>, 2023 */\n"
+      "\n"
+      "/* Auto generated file. Do not edit. */\n"
+      "/* Code generator: "
+      "https://github.com/capstone-engine/capstone/tree/next/suite/auto-sync "
+      "*/\n\n";
+
+  InsnMap << HeaderComment;
+  InsnOpMap << HeaderComment;
+  InsnNameMap << HeaderComment;
+  InsnEnum << HeaderComment;
+  InsnEnum.indent(2) << "ARM_INS_INVALID = 0,\n\n";
+}
+
+void PrinterCapstone::writeFile(std::string Filename,
+                                std::string const &Str) const {
+  std::error_code EC;
+  ToolOutputFile InsnMapFile(Filename, EC, sys::fs::OF_Text);
+  if (EC)
+    PrintFatalNote("Could no write \"" + Filename + "\" Error:\n" +
+                   EC.message());
+  InsnMapFile.os() << Str;
+  InsnMapFile.keep();
+}
+
+/// This function emits all the mapping files and
+/// Instruction enum for the current architecture.
+void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
+                                               AsmMatcherInfo const &Info,
+                                               StringToOffsetTable &StringTable,
+                                               unsigned VariantCount) const {
+  std::string InsnMapStr;
+  std::string InsnOpMapStr;
+  std::string InsnNameMapStr;
+  std::string InsnEnumStr;
+  std::string FeatureEnumStr;
+  raw_string_ostream InsnMap(InsnMapStr);
+  raw_string_ostream InsnOpMap(InsnOpMapStr);
+  raw_string_ostream InsnNameMap(InsnNameMapStr);
+  raw_string_ostream InsnEnum(InsnEnumStr);
+  raw_string_ostream FeatureEnum(FeatureEnumStr);
+  addHeader(InsnMap, InsnOpMap, InsnNameMap, InsnEnum);
+
+  // Currently we ignore any other Asm variant then the primary.
+  Record *AsmVariant = Target.getAsmParserVariant(0);
+  int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
+
+  for (const auto &MI : Info.Matchables) {
+    if (MI->AsmVariantID != AsmVariantNo)
+      continue;
+    printInsnMapEntry(Target.getName(), MI, InsnMap);
+    printInsnOpMapEntry(Target, MI, InsnOpMap);
+    printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
+    printFeatureEnumEntry(Target.getName(), MI, FeatureEnum);
+  }
+  InsnEnum.indent(2)
+      << "ARM_INS_ENDING, // <-- mark the end of the list of instructions\n";
+
+  std::string TName = Target.getName().str();
+  std::string InsnMapFilename = TName + "MappingInsn.inc";
+  writeFile(InsnMapFilename, InsnMapStr);
+  InsnMapFilename = TName + "MappingInsnOp.inc";
+  writeFile(InsnMapFilename, InsnOpMapStr);
+  InsnMapFilename = TName + "MappingInsnName.inc";
+  writeFile(InsnMapFilename, InsnNameMapStr);
+  InsnMapFilename = TName + "InsnEnum.inc";
+  writeFile(InsnMapFilename, InsnEnumStr);
+  InsnMapFilename = TName + "FeatureEnum.inc";
+  writeFile(InsnMapFilename, FeatureEnumStr);
+}
+
+void PrinterCapstone::asmMatcherEmitSourceFileHeader(
+    std::string const &Desc) const {}
+void PrinterCapstone::asmMatcherEmitDeclarations(bool HasOptionalOperands,
+                                                 bool ReportMultipleNearMisses,
+                                                 bool HasOperandInfos) const {}
+void PrinterCapstone::asmMatcherEmitOperandDiagTypes(
+    std::set<StringRef> const Types) const {}
+
+void PrinterCapstone::asmMatcherEmitGetSubtargetFeatureName(
+    std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
+        SubtargetFeatures) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionI(
+    StringRef const &TargetName, StringRef const &ClassName,
+    std::string const &TargetOperandClass, bool HasOptionalOperands,
+    size_t MaxNumOperands) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionII(
+    std::string const &EnumName, StringRef const &AsmMatchConverter) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionIII(
+    std::string const &EnumName, std::string const TargetOperandClass,
+    bool HasOptionalOperands, MatchableInfo::AsmOperand const &Op,
+    MatchableInfo::ResOperand const &OpInfo) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionIV(
+    std::string const &EnumName, int64_t Val) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionV(
+    std::string const &EnumName, std::string const &Reg) const {}
+void PrinterCapstone::asmMatcherEmitConversionFunctionVI() const {}
+void PrinterCapstone::asmMatcherWriteCvtOSToOS() const {}
+void PrinterCapstone::asmMatcherEmitOperandFunctionI(
+    StringRef const &TargetName, StringRef const &ClassName) const {}
+void PrinterCapstone::asmMatcherEmitOperandFunctionII(
+    std::string const &EnumName, MatchableInfo::AsmOperand const &Op,
+    MatchableInfo::ResOperand const &OpInfo) const {}
+void PrinterCapstone::asmMatcherEmitOperandFunctionIII(
+    std::string const &EnumName) const {}
+void PrinterCapstone::asmMatcherEmitOperandFunctionIV(
+    std::string const &EnumName) const {}
+void PrinterCapstone::asmMatcherEmitOperandFunctionV() const {}
+void PrinterCapstone::asmMatcherEmitTiedOperandEnum(
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {}
+void PrinterCapstone::asmMatcherWriteOpOSToOS() const {}
+void PrinterCapstone::asmMatcherEmitTiedOpTable(
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {}
+void PrinterCapstone::asmMatcherEmitTiedOpEmptyTable() const {}
+void PrinterCapstone::asmMatcherEmitOperandConvKindEnum(
+    SmallSetVector<CachedHashString, 16> OperandConversionKinds) const {}
+void PrinterCapstone::asmMatcherEmitInstrConvKindEnum(
+    SmallSetVector<CachedHashString, 16> InstructionConversionKinds) const {}
+void PrinterCapstone::asmMatcherEmitConversionTable(
+    size_t MaxRowLength,
+    std::vector<std::vector<uint8_t>> const ConversionTable,
+    SmallSetVector<CachedHashString, 16> InstructionConversionKinds,
+    SmallSetVector<CachedHashString, 16> OperandConversionKinds,
+    std::map<std::tuple<uint8_t, uint8_t, uint8_t>, std::string>
+        TiedOperandsEnumMap) const {}
+void PrinterCapstone::asmMatcherEmitMatchClassKindEnum(
+    std::forward_list<ClassInfo> const &Infos) const {}
+void PrinterCapstone::asmMatcherEmitMatchClassDiagStrings(
+    AsmMatcherInfo const &Info) const {}
+void PrinterCapstone::asmMatcherEmitRegisterMatchErrorFunc(
+    AsmMatcherInfo &Info) const {}
+void PrinterCapstone::asmMatcherEmitIsSubclassI() const {}
+bool PrinterCapstone::asmMatcherEmitIsSubclassII(
+    bool EmittedSwitch, std::string const &Name) const {
+  return true;
+}
+void PrinterCapstone::asmMatcherEmitIsSubclassIII(StringRef const &Name) const {
+}
+void PrinterCapstone::asmMatcherEmitIsSubclassIV(
+    std::vector<StringRef> const &SuperClasses) const {}
+void PrinterCapstone::asmMatcherEmitIsSubclassV(bool EmittedSwitch) const {}
+void PrinterCapstone::asmMatcherEmitValidateOperandClass(
+    AsmMatcherInfo &Info) const {}
+void PrinterCapstone::asmMatcherEmitMatchClassKindNames(
+    std::forward_list<ClassInfo> &Infos) const {}
+void PrinterCapstone::asmMatcherEmitAsmTiedOperandConstraints(
+    CodeGenTarget &Target, AsmMatcherInfo &Info) const {}
+std::string PrinterCapstone::getNameForFeatureBitset(
+    const std::vector<Record *> &FeatureBitset) const {
+  return "";
+}
+void PrinterCapstone::asmMatcherEmitFeatureBitsetEnum(
+    std::vector<std::vector<Record *>> const FeatureBitsets) const {}
+void PrinterCapstone::asmMatcherEmitFeatureBitsets(
+    std::vector<std::vector<Record *>> const FeatureBitsets,
+    AsmMatcherInfo const &Info) const {}
+void PrinterCapstone::asmMatcherEmitMatchEntryStruct(
+    unsigned MaxMnemonicIndex, unsigned NumConverters, size_t MaxNumOperands,
+    std::vector<std::vector<Record *>> const FeatureBitsets,
+    AsmMatcherInfo const &Info) const {}
+void PrinterCapstone::asmMatcherEmitMatchFunction(
+    CodeGenTarget const &Target, Record const *AsmParser,
+    StringRef const &ClassName, bool HasMnemonicFirst, bool HasOptionalOperands,
+    bool ReportMultipleNearMisses, bool HasMnemonicAliases,
+    size_t MaxNumOperands, bool HasDeprecation,
+    unsigned int VariantCount) const {}
+void PrinterCapstone::asmMatcherEmitMnemonicSpellChecker(
+    CodeGenTarget const &Target, unsigned VariantCount) const {}
+void PrinterCapstone::asmMatcherEmitMnemonicChecker(
+    CodeGenTarget const &Target, unsigned VariantCount, bool HasMnemonicFirst,
+    bool HasMnemonicAliases) const {}
+void PrinterCapstone::asmMatcherEmitCustomOperandParsing(
+    unsigned MaxMask, CodeGenTarget &Target, AsmMatcherInfo const &Info,
+    StringRef ClassName, StringToOffsetTable &StringTable,
+    unsigned MaxMnemonicIndex, unsigned MaxFeaturesIndex, bool HasMnemonicFirst,
+    Record const &AsmParser) const {}
+void PrinterCapstone::asmMatcherEmitIncludes() const {}
+void PrinterCapstone::asmMatcherEmitMnemonicTable(
+    StringToOffsetTable &StringTable) const {}
+void PrinterCapstone::asmMatcherEmitMatchRegisterName(
+    Record const *AsmParser,
+    std::vector<StringMatcher::StringPair> const Matches) const {}
+void PrinterCapstone::asmMatcherEmitMatchTokenString(
+    std::vector<StringMatcher::StringPair> const Matches) const {}
+void PrinterCapstone::asmMatcherEmitMatchRegisterAltName(
+    Record const *AsmParser,
+    std::vector<StringMatcher::StringPair> const Matches) const {}
+void PrinterCapstone::asmMatcherEmitMnemonicAliasVariant(
+    std::vector<StringMatcher::StringPair> const &Cases,
+    unsigned Indent) const {}
+void PrinterCapstone::asmMatcherAppendMnemonicAlias(
+    Record const *R, std::string const &FeatureMask,
+    std::string &MatchCode) const {}
+void PrinterCapstone::asmMatcherAppendMnemonic(Record const *R,
+                                               std::string &MatchCode) const {}
+void PrinterCapstone::asmMatcherAppendMnemonicAliasEnd(
+    std::string &MatchCode) const {}
+void PrinterCapstone::asmMatcherEmitApplyMnemonicAliasesI() const {}
+void PrinterCapstone::asmMatcherEmitApplyMnemonicAliasesII(
+    int AsmParserVariantNo) const {}
+void PrinterCapstone::asmMatcherEmitApplyMnemonicAliasesIII() const {}
+void PrinterCapstone::asmMatcherEmitApplyMnemonicAliasesIV() const {}
+void PrinterCapstone::asmMatcherEmitApplyMnemonicAliasesV() const {}
+void PrinterCapstone::asmMatcherEmitSTFBitEnum(AsmMatcherInfo &Info) const {}
+void PrinterCapstone::asmMatcherEmitComputeAssemblerAvailableFeatures(
+    AsmMatcherInfo &Info, StringRef const &ClassName) const {}
 } // end namespace llvm
