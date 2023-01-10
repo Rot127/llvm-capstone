@@ -3617,7 +3617,10 @@ void PrinterCapstone::printFeatureEnumEntry(
     if (Features.find(Feature) != Features.end())
       continue;
     Features.emplace(Feature);
-    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str() + ",\n";
+    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str();
+    if (Features.size() == 1)
+      FeatureEnum << " = 128";
+    FeatureEnum << ",\n";
   }
 }
 
@@ -3639,7 +3642,6 @@ static void addHeader(raw_string_ostream &InsnMap,
   InsnOpMap << HeaderComment;
   InsnNameMap << HeaderComment;
   InsnEnum << HeaderComment;
-  InsnEnum.indent(2) << "ARM_INS_INVALID = 0,\n\n";
 }
 
 void PrinterCapstone::writeFile(std::string Filename,
@@ -3683,8 +3685,6 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
     printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
     printFeatureEnumEntry(Target.getName(), MI, FeatureEnum);
   }
-  InsnEnum.indent(2)
-      << "ARM_INS_ENDING, // <-- mark the end of the list of instructions\n";
 
   std::string TName = Target.getName().str();
   std::string InsnMapFilename = TName + "MappingInsn.inc";

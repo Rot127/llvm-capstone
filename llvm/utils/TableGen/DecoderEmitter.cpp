@@ -2048,7 +2048,7 @@ static void setPrinterParameters(CodeGenTarget &Target, PrinterLanguage PL,
 
     switch (PL) {
     default:
-      llvm_unreachable("DecoderEmitter does not support the given output language.");
+      PrintFatalNote("DecoderEmitter does not support the given output language.");
     case llvm::PRINTER_LANG_CPP:
       GPrefix = "if (!Check(S, ";
       L = "  MCDisassembler::DecodeStatus S = "
@@ -2072,9 +2072,12 @@ static void setPrinterParameters(CodeGenTarget &Target, PrinterLanguage PL,
 
   switch (PL) {
   default:
-    llvm_unreachable("DecoderEmitter does not support the given output language.");
+    PrintFatalNote("DecoderEmitter does not support the given output language.");
   case llvm::PRINTER_LANG_CPP:
     RFail = "MCDisassembler::Fail";
+    break;
+  case llvm::PRINTER_LANG_CAPSTONE_C:
+    RFail = "MCDisassemblerD_Fail";
     break;
   }
 }
@@ -2099,8 +2102,12 @@ void EmitDecoder(RecordKeeper &RK, raw_ostream &OS, CodeGenTarget &Target) {
     PI = new PrinterLLVM(FOS, PredicateNamespace,
                          GPrefix, GPostfix, ROK, RFail,
                          L, Target.getName().str());
+  } else if (PL == PRINTER_LANG_CAPSTONE_C) {
+    PI = new PrinterCapstone(FOS, PredicateNamespace,
+                         GPrefix, GPostfix, ROK, RFail,
+                         L, Target.getName().str());
   } else {
-    llvm_unreachable("DecoderEmitter does not support the given output language.");
+    PrintFatalNote("DecoderEmitter does not support the given output language.");
   }
   DecoderEmitter(RK, *PI).run();
   delete PI;
