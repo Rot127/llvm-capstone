@@ -51,7 +51,19 @@ void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
       Name == "GET_MATCHER_IMPLEMENTATION" ||
       Name == "GET_SUBTARGET_FEATURE_NAME" || Name == "GET_REGISTER_MATCHER" ||
       Name == "GET_OPERAND_DIAGNOSTIC_TYPES" ||
-      Name == "GET_ASSEMBLER_HEADER") {
+      Name == "GET_ASSEMBLER_HEADER" || Name == "GET_INSTRINFO_HEADER" ||
+      Name == "GET_INSTRINFO_HELPER_DECLS" || Name == "GET_INSTRINFO_HELPERS" ||
+      Name == "GET_INSTRINFO_CTOR_DTOR" ||
+      Name == "GET_INSTRINFO_OPERAND_ENUM" ||
+      Name == "GET_INSTRINFO_NAMED_OPS" ||
+      Name == "GET_INSTRINFO_OPERAND_TYPES_ENUM" ||
+      Name == "GET_INSTRINFO_OPERAND_TYPE" ||
+      Name == "GET_INSTRINFO_MEM_OPERAND_SIZE" ||
+      Name == "GET_INSTRINFO_LOGICAL_OPERAND_SIZE_MAP" ||
+      Name == "GET_INSTRINFO_LOGICAL_OPERAND_TYPE_MAP" ||
+      Name == "GET_INSTRINFO_MC_HELPER_DECLS" ||
+      Name == "GET_INSTRINFO_MC_HELPERS" ||
+      Name == "ENABLE_INSTR_PREDICATE_VERIFIER") {
     return;
   }
   if (Begin) {
@@ -62,6 +74,16 @@ void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
     if (UndefAtEnd)
       OS << "#undef " << Name << "\n";
     OS << "#endif // " << Name << (Newline ? "\n\n" : "\n");
+  }
+}
+
+void PrinterCapstone::emitIfNotDef(std::string const &Name, bool Begin) const {
+  if (Name == "NDEBUG")
+    return;
+  if (Begin) {
+    OS << "#ifndef " << Name << "\n";
+  } else {
+    OS << "#endif // " << Name << "\n\n";
   }
 }
 
@@ -2669,19 +2691,68 @@ void PrinterCapstone::subtargetEmitStageAndSycleTables(
 //---------------------------
 
 void PrinterCapstone::instrInfoEmitSourceFileHeader() const {
-  emitSourceFileHeader("Target Instruction Enum Values and Descriptors", OS);
+  emitDefaultSourceFileHeader(OS);
+}
+
+void PrinterCapstone::instrInfoSetOperandInfoStr(
+    std::string &Res, Record const *OpR, CGIOperandList::OperandInfo const &Op,
+    CGIOperandList::ConstraintInfo const &Constraint) const {
+  if (OpR->isSubClassOf("RegisterOperand"))
+    OpR = OpR->getValueAsDef("RegClass");
+  if (OpR->isSubClassOf("RegisterClass"))
+    Res += OpR->getValueAsString("Namespace").str() + "_" + "RegClassID, ";
+  else if (OpR->isSubClassOf("PointerLikeRegClass"))
+    Res += utostr(OpR->getValueAsInt("RegClassKind")) + ", ";
+  else
+    // -1 means the operand does not have a fixed register class.
+    Res += "-1, ";
+
+  // Fill in applicable flags.
+  Res += "0";
+
+  // Ptr value whose register class is resolved via callback.
+  if (OpR->isSubClassOf("PointerLikeRegClass"))
+    Res += "|(1<<MCOI_LookupPtrRegClass)";
+
+  // Predicate operands.  Check to see if the original unexpanded operand
+  // was of type PredicateOp.
+  if (Op.Rec->isSubClassOf("PredicateOp"))
+    Res += "|(1<<MCOI_Predicate)";
+
+  // Optional def operands.  Check to see if the original unexpanded operand
+  // was of type OptionalDefOperand.
+  if (Op.Rec->isSubClassOf("OptionalDefOperand"))
+    Res += "|(1<<MCOI_OptionalDef)";
+
+  // Branch target operands.  Check to see if the original unexpanded
+  // operand was of type BranchTargetOperand.
+  if (Op.Rec->isSubClassOf("BranchTargetOperand"))
+    Res += "|(1<<MCOI_BranchTarget)";
+
+  // Fill in operand type.
+  Res += ", ";
+  assert(!Op.OperandType.empty() && "Invalid operand type.");
+  std::string OpTypeCpy = Op.OperandType;
+  Res += OpTypeCpy.replace(OpTypeCpy.find("::"), 2, "_");
+
+  // Fill in constraint info.
+  Res += ", ";
+
+  if (Constraint.isNone())
+    Res += "0";
+  else if (Constraint.isEarlyClobber())
+    Res += "MCOI_EARLY_CLOBBER";
+  else {
+    assert(Constraint.isTied());
+    Res += "MCOI_TIED_TO(" + utostr(Constraint.getTiedOperand()) + ")";
+  }
 }
 
 void PrinterCapstone::instrInfoPrintDefList(
     const std::vector<Record *> &Uses, unsigned Num,
-    std::string (*GetQualifiedName)(Record const *R)) const {
-  OS << "static const MCPhysReg ImplicitList" << Num << "[] = { ";
-  for (Record *U : Uses)
-    OS << GetQualifiedName(U) << ", ";
-  OS << "0 };\n";
-}
+    std::string (*GetQualifiedName)(Record const *R)) const {}
 
-void PrinterCapstone::instrInfoEmitOperandInfoTabe(
+void PrinterCapstone::instrInfoEmitOperandInfoTable(
     std::vector<std::string> const &OperandInfo, unsigned N) const {
   OS << "static const MCOperandInfo OperandInfo" << N << "[] = { ";
   for (const std::string &Info : OperandInfo)
@@ -2691,7 +2762,7 @@ void PrinterCapstone::instrInfoEmitOperandInfoTabe(
 
 void PrinterCapstone::instrInfoEmitMCInstrDescHdr(
     std::string TargetName) const {
-  OS << "\nextern const MCInstrDesc " << TargetName << "Insts[] = {\n";
+  OS << "\nstatic const MCInstrDesc " << TargetName << "Insts[] = {\n";
 }
 
 void PrinterCapstone::instrInfoEmitMCInstrDescEnd() const { OS << "};\n\n"; }
@@ -2699,81 +2770,18 @@ void PrinterCapstone::instrInfoEmitMCInstrDescEnd() const { OS << "};\n\n"; }
 void PrinterCapstone::instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
                                           CodeGenInstruction const &Inst,
                                           unsigned Num, int MinOperands) const {
-  OS << "  { ";
-  OS << Num << ",\t" << MinOperands << ",\t" << Inst.Operands.NumDefs << ",\t"
-     << Inst.TheDef->getValueAsInt("Size") << ",\t"
-     << SchedModels.getSchedClassIdx(Inst) << ",\t0";
+  OS << "  { " << MinOperands << ", ";
 }
 
 void PrinterCapstone::instrInfoEmitTargetIndepFlags(
-    CodeGenInstruction const &Inst, bool GetAllowRegisterRenaming) const {
-  // clang-format off
-  if (Inst.isPreISelOpcode)    OS << "|(1ULL<<MCID::PreISelOpcode)";
-  if (Inst.isPseudo)           OS << "|(1ULL<<MCID::Pseudo)";
-  if (Inst.isMeta)             OS << "|(1ULL<<MCID::Meta)";
-  if (Inst.isReturn)           OS << "|(1ULL<<MCID::Return)";
-  if (Inst.isEHScopeReturn)    OS << "|(1ULL<<MCID::EHScopeReturn)";
-  if (Inst.isBranch)           OS << "|(1ULL<<MCID::Branch)";
-  if (Inst.isIndirectBranch)   OS << "|(1ULL<<MCID::IndirectBranch)";
-  if (Inst.isCompare)          OS << "|(1ULL<<MCID::Compare)";
-  if (Inst.isMoveImm)          OS << "|(1ULL<<MCID::MoveImm)";
-  if (Inst.isMoveReg)          OS << "|(1ULL<<MCID::MoveReg)";
-  if (Inst.isBitcast)          OS << "|(1ULL<<MCID::Bitcast)";
-  if (Inst.isAdd)              OS << "|(1ULL<<MCID::Add)";
-  if (Inst.isTrap)             OS << "|(1ULL<<MCID::Trap)";
-  if (Inst.isSelect)           OS << "|(1ULL<<MCID::Select)";
-  if (Inst.isBarrier)          OS << "|(1ULL<<MCID::Barrier)";
-  if (Inst.hasDelaySlot)       OS << "|(1ULL<<MCID::DelaySlot)";
-  if (Inst.isCall)             OS << "|(1ULL<<MCID::Call)";
-  if (Inst.canFoldAsLoad)      OS << "|(1ULL<<MCID::FoldableAsLoad)";
-  if (Inst.mayLoad)            OS << "|(1ULL<<MCID::MayLoad)";
-  if (Inst.mayStore)           OS << "|(1ULL<<MCID::MayStore)";
-  if (Inst.mayRaiseFPException) OS << "|(1ULL<<MCID::MayRaiseFPException)";
-  if (Inst.isPredicable)       OS << "|(1ULL<<MCID::Predicable)";
-  if (Inst.isConvertibleToThreeAddress) OS << "|(1ULL<<MCID::ConvertibleTo3Addr)";
-  if (Inst.isCommutable)       OS << "|(1ULL<<MCID::Commutable)";
-  if (Inst.isTerminator)       OS << "|(1ULL<<MCID::Terminator)";
-  if (Inst.isReMaterializable) OS << "|(1ULL<<MCID::Rematerializable)";
-  if (Inst.isNotDuplicable)    OS << "|(1ULL<<MCID::NotDuplicable)";
-  if (Inst.Operands.hasOptionalDef) OS << "|(1ULL<<MCID::HasOptionalDef)";
-  if (Inst.usesCustomInserter) OS << "|(1ULL<<MCID::UsesCustomInserter)";
-  if (Inst.hasPostISelHook)    OS << "|(1ULL<<MCID::HasPostISelHook)";
-  if (Inst.Operands.isVariadic)OS << "|(1ULL<<MCID::Variadic)";
-  if (Inst.hasSideEffects)     OS << "|(1ULL<<MCID::UnmodeledSideEffects)";
-  if (Inst.isAsCheapAsAMove)   OS << "|(1ULL<<MCID::CheapAsAMove)";
-  if (!GetAllowRegisterRenaming || Inst.hasExtraSrcRegAllocReq)
-    OS << "|(1ULL<<MCID::ExtraSrcRegAllocReq)";
-  if (!GetAllowRegisterRenaming || Inst.hasExtraDefRegAllocReq)
-    OS << "|(1ULL<<MCID::ExtraDefRegAllocReq)";
-  if (Inst.isRegSequence) OS << "|(1ULL<<MCID::RegSequence)";
-  if (Inst.isExtractSubreg) OS << "|(1ULL<<MCID::ExtractSubreg)";
-  if (Inst.isInsertSubreg) OS << "|(1ULL<<MCID::InsertSubreg)";
-  if (Inst.isConvergent) OS << "|(1ULL<<MCID::Convergent)";
-  if (Inst.variadicOpsAreDefs) OS << "|(1ULL<<MCID::VariadicOpsAreDefs)";
-  if (Inst.isAuthenticated) OS << "|(1ULL<<MCID::Authenticated)";
-  // clang-format on
-}
+    CodeGenInstruction const &Inst, bool GetAllowRegisterRenaming) const {}
 
-void PrinterCapstone::instrInfoEmitTSFFlags(uint64_t Value) const {
-  OS << ", 0x";
-  OS.write_hex(Value);
-  OS << "ULL, ";
-}
+void PrinterCapstone::instrInfoEmitTSFFlags(uint64_t Value) const {}
 
 void PrinterCapstone::instrInfoEmitUseDefsLists(
     std::map<std::vector<Record *>, unsigned> &EmittedLists,
     std::vector<Record *> const &UseList,
-    std::vector<Record *> const &DefList) const {
-  if (UseList.empty())
-    OS << "nullptr, ";
-  else
-    OS << "ImplicitList" << EmittedLists[UseList] << ", ";
-
-  if (DefList.empty())
-    OS << "nullptr, ";
-  else
-    OS << "ImplicitList" << EmittedLists[DefList] << ", ";
-}
+    std::vector<Record *> const &DefList) const {}
 
 void PrinterCapstone::instrInfoEmitOperandInfo(
     std::vector<std::string> const &OperandInfo,
@@ -2786,593 +2794,180 @@ void PrinterCapstone::instrInfoEmitOperandInfo(
 
 void PrinterCapstone::instrInfoEmitRecordEnd(
     unsigned InstNum, std::string const &InstName) const {
-  OS << " },  // Inst #" << InstNum << " = " << InstName << "\n";
+  OS << " },\n";
 }
 
 void PrinterCapstone::instrInfoEmitStringLiteralDef(
     std::string const &TargetName,
-    SequenceToOffsetTable<std::string> InstrNames) const {
-  InstrNames.emitStringLiteralDef(OS, Twine("extern const char ") + TargetName +
-                                          "InstrNameData[]");
-}
+    SequenceToOffsetTable<std::string> InstrNames) const {}
 
 void PrinterCapstone::instrInfoEmitInstrNameIndices(
     std::string const &TargetName,
     ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
-    SequenceToOffsetTable<std::string> const &InstrNames) const {
-  OS << "extern const unsigned " << TargetName << "InstrNameIndices[] = {";
-  unsigned Num = 0;
-  for (const CodeGenInstruction *Inst : NumberedInstructions) {
-    // Newline every eight entries.
-    if (Num % 8 == 0)
-      OS << "\n    ";
-    OS << InstrNames.get(std::string(Inst->TheDef->getName())) << "U, ";
-    ++Num;
-  }
-  OS << "\n};\n\n";
-}
+    SequenceToOffsetTable<std::string> const &InstrNames) const {}
 
 void PrinterCapstone::instrInfoEmitInstrDeprFeatures(
     std::string const &TargetName, std::string const &TargetNamespace,
     ArrayRef<const CodeGenInstruction *> const &NumberedInstructions,
-    SequenceToOffsetTable<std::string> const &InstrNames) const {
-  OS << "extern const uint8_t " << TargetName
-     << "InstrDeprecationFeatures[] = {";
-  unsigned Num = 0;
-  for (const CodeGenInstruction *Inst : NumberedInstructions) {
-    if (Num % 8 == 0)
-      OS << "\n    ";
-    if (!Inst->HasComplexDeprecationPredicate &&
-        !Inst->DeprecatedReason.empty())
-      OS << TargetNamespace << "::" << Inst->DeprecatedReason << ", ";
-    else
-      OS << "uint8_t(-1), ";
-    ++Num;
-  }
-  OS << "\n};\n\n";
-}
+    SequenceToOffsetTable<std::string> const &InstrNames) const {}
 
 void PrinterCapstone::instrInfoEmitInstrComplexDeprInfos(
     std::string const &TargetName,
-    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
-  OS << "extern const MCInstrInfo::ComplexDeprecationPredicate " << TargetName
-     << "InstrComplexDeprecationInfos[] = {";
-  unsigned Num = 0;
-  for (const CodeGenInstruction *Inst : NumberedInstructions) {
-    if (Num % 8 == 0)
-      OS << "\n    ";
-    if (Inst->HasComplexDeprecationPredicate)
-      // Emit a function pointer to the complex predicate method.
-      OS << "&get" << Inst->DeprecatedReason << "DeprecationInfo, ";
-    else
-      OS << "nullptr, ";
-    ++Num;
-  }
-  OS << "\n};\n\n";
-}
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {}
 
 void PrinterCapstone::instrInfoEmitMCInstrInfoInitRoutine(
     std::string const &TargetName, unsigned NumberedInstrSize,
-    bool HasDeprecationFeatures, bool HasComplexDeprecationInfos) const {
-  OS << "static inline void Init" << TargetName
-     << "MCInstrInfo(MCInstrInfo *II) {\n";
-  OS << "  II->InitMCInstrInfo(" << TargetName << "Insts, " << TargetName
-     << "InstrNameIndices, " << TargetName << "InstrNameData, ";
-  if (HasDeprecationFeatures)
-    OS << TargetName << "InstrDeprecationFeatures, ";
-  else
-    OS << "nullptr, ";
-  if (HasComplexDeprecationInfos)
-    OS << TargetName << "InstrComplexDeprecationInfos, ";
-  else
-    OS << "nullptr, ";
-  OS << NumberedInstrSize << ");\n}\n\n";
-}
+    bool HasDeprecationFeatures, bool HasComplexDeprecationInfos) const {}
 
 void PrinterCapstone::instrInfoEmitClassStruct(
-    std::string const &ClassName) const {
-  OS << "struct " << ClassName << " : public TargetInstrInfo {\n"
-     << "  explicit " << ClassName
-     << "(int CFSetupOpcode = -1, int CFDestroyOpcode = -1, int CatchRetOpcode "
-        "= -1, int ReturnOpcode = -1);\n"
-     << "  ~" << ClassName << "() override = default;\n";
-  OS << "\n};\n";
-}
+    std::string const &ClassName) const {}
 
 void PrinterCapstone::instrInfoEmitTIIHelperMethod(
     StringRef const &TargetName, Record const *Rec,
-    bool ExpandDefinition) const {
-  OS << (ExpandDefinition ? "" : "static ") << "bool ";
-  if (ExpandDefinition)
-    OS << TargetName << "InstrInfo::";
-  OS << Rec->getValueAsString("FunctionName");
-  OS << "(const MachineInstr &MI)";
-  if (!ExpandDefinition) {
-    OS << ";\n";
-    return;
-  }
-
-  OS << " {\n";
-  OS.indent(PE->getIndentLevel() * 2);
-  PE->expandStatement(OS, Rec->getValueAsDef("Body"));
-  OS << "\n}\n\n";
-}
+    bool ExpandDefinition) const {}
 
 void PrinterCapstone::instrInfoEmitExternArrays(
     std::string const &TargetName, bool HasDeprecationFeatures,
-    bool HasComplexDeprecationInfos) const {
-  OS << "extern const MCInstrDesc " << TargetName << "Insts[];\n";
-  OS << "extern const unsigned " << TargetName << "InstrNameIndices[];\n";
-  OS << "extern const char " << TargetName << "InstrNameData[];\n";
-  if (HasDeprecationFeatures)
-    OS << "extern const uint8_t " << TargetName
-       << "InstrDeprecationFeatures[];\n";
-  if (HasComplexDeprecationInfos)
-    OS << "extern const MCInstrInfo::ComplexDeprecationPredicate " << TargetName
-       << "InstrComplexDeprecationInfos[];\n";
-}
+    bool HasComplexDeprecationInfos) const {}
 
 void PrinterCapstone::instrInfoEmitMCInstrInfoInit(
     std::string const &TargetName, std::string const &ClassName,
     unsigned NumberedInstrSize, bool HasDeprecationFeatures,
-    bool HasComplexDeprecationInfos) const {
-  OS << ClassName << "::" << ClassName
-     << "(int CFSetupOpcode, int CFDestroyOpcode, int CatchRetOpcode, int "
-        "ReturnOpcode)\n"
-     << "  : TargetInstrInfo(CFSetupOpcode, CFDestroyOpcode, CatchRetOpcode, "
-        "ReturnOpcode) {\n"
-     << "  InitMCInstrInfo(" << TargetName << "Insts, " << TargetName
-     << "InstrNameIndices, " << TargetName << "InstrNameData, ";
-  if (HasDeprecationFeatures)
-    OS << TargetName << "InstrDeprecationFeatures, ";
-  else
-    OS << "nullptr, ";
-  if (HasComplexDeprecationInfos)
-    OS << TargetName << "InstrComplexDeprecationInfos, ";
-  else
-    OS << "nullptr, ";
-  OS << NumberedInstrSize << ");\n}\n";
-}
+    bool HasComplexDeprecationInfos) const {}
 
 void PrinterCapstone::instrInfoEmitOperandEnum(
-    std::map<std::string, unsigned> const &Operands) const {
-  OS << "enum {\n";
-  for (const auto &Op : Operands)
-    OS << "  " << Op.first << " = " << Op.second << ",\n";
-
-  OS << "  OPERAND_LAST";
-  OS << "\n};\n";
-}
+    std::map<std::string, unsigned> const &Operands) const {}
 
 void PrinterCapstone::instrInfoEmitGetNamedOperandIdx(
     std::map<std::string, unsigned> const &Operands,
-    OpNameMapTy const &OperandMap) const {
-  OS << "LLVM_READONLY\n";
-  OS << "int16_t getNamedOperandIdx(uint16_t Opcode, uint16_t NamedIdx) {\n";
-  if (!Operands.empty()) {
-    OS << "  static const int16_t OperandMap [][" << Operands.size()
-       << "] = {\n";
-    for (const auto &Entry : OperandMap) {
-      const std::map<unsigned, unsigned> &OpList = Entry.first;
-      OS << "{";
+    OpNameMapTy const &OperandMap) const {}
 
-      // Emit a row of the OperandMap table
-      for (unsigned I = 0, E = Operands.size(); I != E; ++I)
-        OS << (OpList.count(I) == 0 ? -1 : (int)OpList.find(I)->second) << ", ";
-
-      OS << "},\n";
-    }
-    OS << "};\n";
-
-    OS << "  switch(Opcode) {\n";
-    unsigned TableIndex = 0;
-    for (const auto &Entry : OperandMap) {
-      for (const std::string &Name : Entry.second)
-        OS << "  case " << Name << ":\n";
-
-      OS << "    return OperandMap[" << TableIndex++ << "][NamedIdx];\n";
-    }
-    OS << "  default: return -1;\n";
-    OS << "  }\n";
-  } else {
-    // There are no operands, so no need to emit anything
-    OS << "  return -1;\n";
-  }
-  OS << "}\n";
-}
-
-void PrinterCapstone::instrInfoEmitOpTypeEnumPartI() const {
-  OS << "enum OperandType {\n";
-}
+void PrinterCapstone::instrInfoEmitOpTypeEnumPartI() const {}
 
 void PrinterCapstone::instrInfoEmitOpTypeEnumPartII(StringRef const &OpName,
-                                                    unsigned EnumVal) const {
-  OS << "  " << OpName << " = " << EnumVal << ",\n";
-}
+                                                    unsigned EnumVal) const {}
 
-void PrinterCapstone::instrInfoEmitOpTypeEnumPartIII() const {
-  OS << "  OPERAND_TYPE_LIST_END"
-     << "\n};\n";
-}
+void PrinterCapstone::instrInfoEmitOpTypeEnumPartIII() const {}
 
 void PrinterCapstone::instrInfoEmitOpTypeOffsetTable(
     std::vector<int> OperandOffsets, unsigned OpRecSize,
-    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
-  OS << ((OpRecSize <= UINT16_MAX) ? "  const uint16_t" : "  const uint32_t");
-  OS << " Offsets[] = {\n";
-  for (int I = 0, E = OperandOffsets.size(); I != E; ++I) {
-    OS << "    /* " << NumberedInstructions[I]->TheDef->getName() << " */\n";
-    OS << "    " << OperandOffsets[I] << ",\n";
-  }
-  OS << "  };\n";
-}
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {}
 
 void PrinterCapstone::instrInfoEmitOpcodeOpTypesTable(
     unsigned EnumVal, std::vector<Record *> const &OperandRecords,
     std::vector<int> OperandOffsets,
-    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {
-  OS << "\n  using namespace OpTypes;\n";
-  OS << ((EnumVal <= INT8_MAX) ? "  const int8_t" : "  const int16_t");
-  OS << " OpcodeOperandTypes[] = {\n    ";
-  for (int I = 0, E = OperandRecords.size(), CurOffset = 0; I != E; ++I) {
-    // We print each Opcode's operands in its own row.
-    if (I == OperandOffsets[CurOffset]) {
-      OS << "\n    /* " << NumberedInstructions[CurOffset]->TheDef->getName()
-         << " */\n    ";
-      while (OperandOffsets[++CurOffset] == I)
-        OS << "/* " << NumberedInstructions[CurOffset]->TheDef->getName()
-           << " */\n    ";
-    }
-    Record *OpR = OperandRecords[I];
-    if ((OpR->isSubClassOf("Operand") || OpR->isSubClassOf("RegisterOperand") ||
-         OpR->isSubClassOf("RegisterClass")) &&
-        !OpR->isAnonymous())
-      OS << OpR->getName();
-    else
-      OS << -1;
-    OS << ", ";
-  }
-  OS << "\n  };\n";
-}
+    ArrayRef<const CodeGenInstruction *> const &NumberedInstructions) const {}
 
-void PrinterCapstone::instrInfoEmitGetOpTypeHdr() const {
-  OS << "LLVM_READONLY\n";
-  OS << "static int getOperandType(uint16_t Opcode, uint16_t OpIdx) {\n";
-}
+void PrinterCapstone::instrInfoEmitGetOpTypeHdr() const {}
 
-void PrinterCapstone::instrInfoEmitGetOpTypeReturn() const {
-  OS << "  return OpcodeOperandTypes[Offsets[Opcode] + OpIdx];\n";
-}
+void PrinterCapstone::instrInfoEmitGetOpTypeReturn() const {}
 
-void PrinterCapstone::instrInfoEmitGetOpTypeUnreachable() const {
-  OS << "  llvm_unreachable(\"No instructions defined\");\n";
-}
+void PrinterCapstone::instrInfoEmitGetOpTypeUnreachable() const {}
 
-void PrinterCapstone::instrInfoEmitGetOpTypeEnd() const { OS << "}\n"; }
+void PrinterCapstone::instrInfoEmitGetOpTypeEnd() const {}
 
-void PrinterCapstone::instrInfoEmitGetMemOpSizeHdr() const {
-  OS << "LLVM_READONLY\n";
-  OS << "static int getMemOperandSize(int OpType) {\n";
-  OS << "  switch (OpType) {\n";
-}
+void PrinterCapstone::instrInfoEmitGetMemOpSizeHdr() const {}
 
 void PrinterCapstone::instrInfoEmitGetOpMemSizeTbl(
-    std::map<int, std::vector<StringRef>> const &SizeToOperandName) const {
-  OS << "  default: return 0;\n";
-  for (auto KV : SizeToOperandName) {
-    for (const StringRef &OperandName : KV.second)
-      OS << "  case OpTypes::" << OperandName << ":\n";
-    OS << "    return " << KV.first << ";\n\n";
-  }
-  OS << "  }\n}\n";
-}
+    std::map<int, std::vector<StringRef>> const &SizeToOperandName) const {}
 
 std::string
 PrinterCapstone::instrInfoGetInstMapEntry(StringRef const &Namespace,
                                           StringRef const &InstrName) const {
-  return Namespace.str() + "::" + InstrName.str();
+  return Namespace.str() + "_" + InstrName.str();
 }
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpSizeHdr() const {
-  OS << "LLVM_READONLY static unsigned\n";
-  OS << "getLogicalOperandSize(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
-}
+void PrinterCapstone::instrInfoEmitGetLogicalOpSizeHdr() const {}
 
 void PrinterCapstone::instrInfoEmitGetLogicalOpSizeTable(
     size_t LogicalOpListSize,
     std::vector<const std::vector<unsigned> *> const &LogicalOpSizeList) const {
-  OS << "  static const unsigned SizeMap[][" << LogicalOpListSize << "] = {\n";
-  for (auto &R : LogicalOpSizeList) {
-    const auto &Row = *R;
-    OS << "   {";
-    int I;
-    for (I = 0; I < static_cast<int>(Row.size()); ++I) {
-      OS << Row[I] << ", ";
-    }
-    for (; I < static_cast<int>(LogicalOpListSize); ++I) {
-      OS << "0, ";
-    }
-    OS << "}, ";
-    OS << "\n";
-  }
-  OS << "  };\n";
 }
 
 void PrinterCapstone::instrInfoEmitGetLogicalOpSizeSwitch(
-    std::map<unsigned, std::vector<std::string>> InstMap) const {
-  OS << "  switch (Opcode) {\n";
-  OS << "  default: return LogicalOpIdx;\n";
-  for (auto &P : InstMap) {
-    auto OpMapIdx = P.first;
-    const auto &Insts = P.second;
-    for (const auto &Inst : Insts) {
-      OS << "  case " << Inst << ":\n";
-    }
-    OS << "    return SizeMap[" << OpMapIdx << "][LogicalOpIdx];\n";
-  }
-  OS << "  }\n";
-}
+    std::map<unsigned, std::vector<std::string>> InstMap) const {}
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpSizeReturn() const {
-  OS << "  return LogicalOpIdx;\n";
-}
+void PrinterCapstone::instrInfoEmitGetLogicalOpSizeReturn() const {}
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpSizeEnd() const { OS << "}\n"; }
+void PrinterCapstone::instrInfoEmitGetLogicalOpSizeEnd() const {}
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpIdx() const {
-  OS << "LLVM_READONLY static inline unsigned\n";
-  OS << "getLogicalOperandIdx(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
-  OS << "  auto S = 0U;\n";
-  OS << "  for (auto i = 0U; i < LogicalOpIdx; ++i)\n";
-  OS << "    S += getLogicalOperandSize(Opcode, i);\n";
-  OS << "  return S;\n";
-  OS << "}\n";
-}
+void PrinterCapstone::instrInfoEmitGetLogicalOpIdx() const {}
 
 std::string
 PrinterCapstone::instrInfoGetOpTypeListEntry(StringRef const &Namespace,
                                              StringRef const &OpName) const {
-  return Namespace.str() + "::OpTypes::" + OpName.str();
+  return Namespace.str() + "_OpTypes_" + OpName.str();
 }
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpTypeHdr() const {
-  OS << "LLVM_READONLY static int\n";
-  OS << "getLogicalOperandType(uint16_t Opcode, uint16_t LogicalOpIdx) {\n";
-}
+void PrinterCapstone::instrInfoEmitGetLogicalOpTypeHdr() const {}
+
 void PrinterCapstone::instrInfoEmitGetLogicalOpTypeTable(
     size_t OpTypeListSize,
     std::vector<const std::vector<std::string> *> const &LogicalOpTypeList)
-    const {
-  OS << "  static const int TypeMap[][" << OpTypeListSize << "] = {\n";
-  for (int R = 0, Rs = LogicalOpTypeList.size(); R < Rs; ++R) {
-    const auto &Row = *LogicalOpTypeList[R];
-    OS << "   {";
-    int I, S = Row.size();
-    for (I = 0; I < S; ++I) {
-      if (I > 0)
-        OS << ", ";
-      OS << Row[I];
-    }
-    for (; I < static_cast<int>(OpTypeListSize); ++I) {
-      if (I > 0)
-        OS << ", ";
-      OS << "-1";
-    }
-    OS << "}";
-    if (R != Rs - 1)
-      OS << ",";
-    OS << "\n";
-  }
-  OS << "  };\n";
-}
+    const {}
 
 void PrinterCapstone::instrInfoEmitGetLogicalOpTypeSwitch(
-    std::map<unsigned, std::vector<std::string>> InstMap) const {
-  OS << "  switch (Opcode) {\n";
-  OS << "  default: return -1;\n";
-  for (auto &P : InstMap) {
-    auto OpMapIdx = P.first;
-    const auto &Insts = P.second;
-    for (const auto &Inst : Insts) {
-      OS << "  case " << Inst << ":\n";
-    }
-    OS << "    return TypeMap[" << OpMapIdx << "][LogicalOpIdx];\n";
-  }
-  OS << "  }\n";
-}
+    std::map<unsigned, std::vector<std::string>> InstMap) const {}
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpTypeReturn() const {
-  OS << "  return -1;\n";
-}
+void PrinterCapstone::instrInfoEmitGetLogicalOpTypeReturn() const {}
 
-void PrinterCapstone::instrInfoEmitGetLogicalOpTypeEnd() const { OS << "}\n"; }
+void PrinterCapstone::instrInfoEmitGetLogicalOpTypeEnd() const {}
 
-void PrinterCapstone::instrInfoEmitDeclareMCInstFeatureClasses() const {
-  OS << "class MCInst;\n";
-  OS << "class FeatureBitset;\n\n";
-}
+void PrinterCapstone::instrInfoEmitDeclareMCInstFeatureClasses() const {}
 
 void PrinterCapstone::instrInfoEmitPredFcnDecl(
-    RecVec const &TIIPredicates) const {
-  for (const Record *Rec : TIIPredicates) {
-    OS << "bool " << Rec->getValueAsString("FunctionName")
-       << "(const MCInst &MI);\n";
-  }
-
-  OS << "void verifyInstructionPredicates(unsigned Opcode, const FeatureBitset "
-        "&Features);\n";
-}
+    RecVec const &TIIPredicates) const {}
 
 void PrinterCapstone::instrInfoEmitPredFcnImpl(StringRef const &TargetName,
-                                               RecVec const &TIIPredicates) {
-  initNewPE(TargetName);
-  PE->setExpandForMC(true);
-  for (const Record *Rec : TIIPredicates) {
-    OS << "bool " << Rec->getValueAsString("FunctionName");
-    OS << "(const MCInst &MI) {\n";
+                                               RecVec const &TIIPredicates) {}
 
-    OS.indent(PE->getIndentLevel() * 2);
-    PE->expandStatement(OS, Rec->getValueAsDef("Body"));
-    OS << "\n}\n\n";
-  }
-}
-
-void PrinterCapstone::instrInfoEmitInstrPredVerifierIncludes() const {
-  OS << "#include <sstream>\n\n";
-}
+void PrinterCapstone::instrInfoEmitInstrPredVerifierIncludes() const {}
 
 void PrinterCapstone::instrInfoEmitSubtargetFeatureBitEnumeration(
     std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
-    const {
-  // Emit the subtarget feature enumeration.
-  SubtargetFeatureInfo::emitSubtargetFeatureBitEnumeration(SubtargetFeatures,
-                                                           OS);
-}
+    const {}
 
 void PrinterCapstone::instrInfoEmitEmitSTFNameTable(
     std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
-    const {
-  OS << "#ifndef NDEBUG\n";
-  SubtargetFeatureInfo::emitNameTable(SubtargetFeatures, OS);
-  OS << "#endif // NDEBUG\n\n";
-}
+    const {}
 
 void PrinterCapstone::instrInfoEmitFeatureBitsEnum(
-    std::vector<std::vector<Record *>> const &FeatureBitsets) const {
-  OS << "// Feature bitsets.\n"
-     << "enum : " << getMinimalTypeForRange(FeatureBitsets.size()) << " {\n"
-     << "  CEFBS_None,\n";
-  for (const auto &FeatureBitset : FeatureBitsets) {
-    if (FeatureBitset.empty())
-      continue;
-    OS << "  " << getNameForFeatureBitset(FeatureBitset) << ",\n";
-  }
-  OS << "};\n\n";
-}
+    std::vector<std::vector<Record *>> const &FeatureBitsets) const {}
 
 void PrinterCapstone::instrInfoEmitFeatureBitsArray(
     std::vector<std::vector<Record *>> const &FeatureBitsets,
     std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
-        &SubtargetFeatures) const {
-  OS << "static constexpr FeatureBitset FeatureBitsets[] = {\n"
-     << "  {}, // CEFBS_None\n";
-  for (const auto &FeatureBitset : FeatureBitsets) {
-    if (FeatureBitset.empty())
-      continue;
-    OS << "  {";
-    for (const auto &Feature : FeatureBitset) {
-      const auto &I = SubtargetFeatures.find(Feature);
-      assert(I != SubtargetFeatures.end() && "Didn't import predicate?");
-      OS << I->second.getEnumBitName() << ", ";
-    }
-    OS << "},\n";
-  }
-  OS << "};\n";
-}
+        &SubtargetFeatures) const {}
 
 void PrinterCapstone::instrInfoEmitPredVerifier(
     std::vector<std::vector<Record *>> const &FeatureBitsets,
     std::map<Record *, SubtargetFeatureInfo, LessRecordByID> const
         &SubtargetFeatures,
-    CodeGenTarget const &Target) const {
-  OS << "void verifyInstructionPredicates(\n"
-     << "    unsigned Opcode, const FeatureBitset &Features) {\n";
-  emitIfNotDef("NDEBUG", true);
-  OS << "  static " << getMinimalTypeForRange(FeatureBitsets.size())
-     << " RequiredFeaturesRefs[] = {\n";
-  unsigned InstIdx = 0;
-  for (const CodeGenInstruction *Inst : Target.getInstructionsByEnumValue()) {
-    OS << "    CEFBS";
-    unsigned NumPredicates = 0;
-    for (Record *Predicate : Inst->TheDef->getValueAsListOfDefs("Predicates")) {
-      const auto &I = SubtargetFeatures.find(Predicate);
-      if (I != SubtargetFeatures.end()) {
-        OS << '_' << I->second.TheDef->getName();
-        NumPredicates++;
-      }
-    }
-    if (!NumPredicates)
-      OS << "_None";
-    OS << ", // " << Inst->TheDef->getName() << " = " << InstIdx << "\n";
-    InstIdx++;
-  }
-  OS << "  };\n\n";
-  OS << "  assert(Opcode < " << InstIdx << ");\n";
-  OS << "  FeatureBitset AvailableFeatures = "
-        "computeAvailableFeatures(Features);\n";
-  OS << "  const FeatureBitset &RequiredFeatures = "
-        "FeatureBitsets[RequiredFeaturesRefs[Opcode]];\n";
-  OS << "  FeatureBitset MissingFeatures =\n"
-     << "      (AvailableFeatures & RequiredFeatures) ^\n"
-     << "      RequiredFeatures;\n"
-     << "  if (MissingFeatures.any()) {\n"
-     << "    std::ostringstream Msg;\n"
-     << "    Msg << \"Attempting to emit \" << &" << Target.getName()
-     << "InstrNameData[" << Target.getName() << "InstrNameIndices[Opcode]]\n"
-     << "        << \" instruction but the \";\n"
-     << "    for (unsigned i = 0, e = MissingFeatures.size(); i != e; ++i)\n"
-     << "      if (MissingFeatures.test(i))\n"
-     << "        Msg << SubtargetFeatureNames[i] << \" \";\n"
-     << "    Msg << \"predicate(s) are not met\";\n"
-     << "    report_fatal_error(Msg.str().c_str());\n"
-     << "  }\n";
-  emitIfNotDef("NDEBUG", false);
-  OS << "}\n";
-}
+    CodeGenTarget const &Target) const {}
 
 void PrinterCapstone::instrInfoEmitEnums(
     CodeGenTarget const &Target, StringRef const &Namespace,
     CodeGenSchedModels const &SchedModels) const {
   emitIncludeToggle("GET_INSTRINFO_ENUM", true);
 
-  emitNamespace("llvm", true);
-  // We must emit the PHI opcode first...
-  emitNamespace(Namespace.str(), true);
   unsigned Num = 0;
   OS << "  enum {\n";
   for (const CodeGenInstruction *Inst : Target.getInstructionsByEnumValue())
-    OS << "    " << Inst->TheDef->getName() << "\t= " << Num++ << ",\n";
+    OS << "    " << Namespace.str() << "_" << Inst->TheDef->getName()
+       << "\t= " << Num++ << ",\n";
   OS << "    INSTRUCTION_LIST_END = " << Num << "\n";
   OS << "  };\n\n";
-  emitNamespace(Namespace.str(), false);
-  emitNamespace("llvm", false);
   emitIncludeToggle("GET_INSTRINFO_ENUM", false);
-
-  emitIncludeToggle("GET_INSTRINFO_SCHED_ENUM", true);
-  emitNamespace("llvm", true);
-  emitNamespace(Namespace.str(), true);
-  emitNamespace("Sched", true);
-  Num = 0;
-  OS << "  enum {\n";
-  for (const auto &Class : SchedModels.explicit_classes())
-    OS << "    " << Class.Name << "\t= " << Num++ << ",\n";
-  OS << "    SCHED_LIST_END = " << Num << "\n";
-  OS << "  };\n";
-  emitNamespace("Sched", false);
-  emitNamespace(Namespace.str(), false);
-  emitNamespace("llvm", false);
-
-  emitIncludeToggle("GET_INSTRINFO_SCHED_ENUM", false);
 }
 
 void PrinterCapstone::instrInfoEmitTIIPredicates(StringRef const &TargetName,
                                                  RecVec const &TIIPredicates,
-                                                 bool ExpandDefinition) {
-  initNewPE(TargetName);
-  PE->setExpandForMC(false);
-
-  for (const Record *Rec : TIIPredicates) {
-    instrInfoEmitTIIHelperMethod(TargetName, Rec, ExpandDefinition);
-  }
-}
+                                                 bool ExpandDefinition) {}
 
 void PrinterCapstone::instrInfoEmitComputeAssemblerAvailableFeatures(
     StringRef const &TargetName,
     std::map<Record *, SubtargetFeatureInfo, LessRecordByID> &SubtargetFeatures)
-    const {
-  SubtargetFeatureInfo::emitComputeAssemblerAvailableFeatures(
-      TargetName, "", "computeAvailableFeatures", SubtargetFeatures, OS);
-}
+    const {}
 
 //--------------------------
 // Backend: AsmMatcher

@@ -118,57 +118,7 @@ InstrInfoEmitter::GetOperandInfo(const CodeGenInstruction &Inst) {
       Record *OpR = OperandList[j].Rec;
       std::string Res;
 
-      if (OpR->isSubClassOf("RegisterOperand"))
-        OpR = OpR->getValueAsDef("RegClass");
-      if (OpR->isSubClassOf("RegisterClass"))
-        Res += getQualifiedName(OpR) + "RegClassID, ";
-      else if (OpR->isSubClassOf("PointerLikeRegClass"))
-        Res += utostr(OpR->getValueAsInt("RegClassKind")) + ", ";
-      else
-        // -1 means the operand does not have a fixed register class.
-        Res += "-1, ";
-
-      // Fill in applicable flags.
-      Res += "0";
-
-      // Ptr value whose register class is resolved via callback.
-      if (OpR->isSubClassOf("PointerLikeRegClass"))
-        Res += "|(1<<MCOI::LookupPtrRegClass)";
-
-      // Predicate operands.  Check to see if the original unexpanded operand
-      // was of type PredicateOp.
-      if (Op.Rec->isSubClassOf("PredicateOp"))
-        Res += "|(1<<MCOI::Predicate)";
-
-      // Optional def operands.  Check to see if the original unexpanded operand
-      // was of type OptionalDefOperand.
-      if (Op.Rec->isSubClassOf("OptionalDefOperand"))
-        Res += "|(1<<MCOI::OptionalDef)";
-
-      // Branch target operands.  Check to see if the original unexpanded
-      // operand was of type BranchTargetOperand.
-      if (Op.Rec->isSubClassOf("BranchTargetOperand"))
-        Res += "|(1<<MCOI::BranchTarget)";
-
-      // Fill in operand type.
-      Res += ", ";
-      assert(!Op.OperandType.empty() && "Invalid operand type.");
-      Res += Op.OperandType;
-
-      // Fill in constraint info.
-      Res += ", ";
-
-      const CGIOperandList::ConstraintInfo &Constraint =
-        Op.Constraints[j];
-      if (Constraint.isNone())
-        Res += "0";
-      else if (Constraint.isEarlyClobber())
-        Res += "MCOI_EARLY_CLOBBER";
-      else {
-        assert(Constraint.isTied());
-        Res += "MCOI_TIED_TO(" + utostr(Constraint.getTiedOperand()) + ")";
-      }
-
+      PI.instrInfoSetOperandInfoStr(Res, OpR, Op, Op.Constraints[j]);
       Result.push_back(Res);
     }
   }
@@ -190,7 +140,7 @@ void InstrInfoEmitter::EmitOperandInfo(
     if (N != 0) continue;
 
     N = ++OperandListNum;
-    PI.instrInfoEmitOperandInfoTabe(OperandInfo, N);
+    PI.instrInfoEmitOperandInfoTable(OperandInfo, N);
   }
 }
 

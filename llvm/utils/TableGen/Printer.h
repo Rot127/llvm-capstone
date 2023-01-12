@@ -636,12 +636,16 @@ public:
   //---------------------------
 
   virtual void instrInfoEmitSourceFileHeader() const;
+  virtual void instrInfoSetOperandInfoStr(
+      std::string &Res, Record const *OpR,
+      CGIOperandList::OperandInfo const &Op,
+      CGIOperandList::ConstraintInfo const &Constraint) const;
   virtual void
   instrInfoPrintDefList(const std::vector<Record *> &Uses, unsigned Num,
                         std::string (*GetQualifiedName)(Record const *R)) const;
   virtual void
-  instrInfoEmitOperandInfoTabe(std::vector<std::string> const &OperandInfo,
-                               unsigned N) const;
+  instrInfoEmitOperandInfoTable(std::vector<std::string> const &OperandInfo,
+                                unsigned N) const;
   virtual void instrInfoEmitMCInstrDescHdr(std::string TargetName) const;
   virtual void instrInfoEmitMCInstrDescEnd() const;
   virtual void instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
@@ -946,6 +950,7 @@ public:
 
   void emitNamespace(std::string const &Name, bool Begin,
                      std::string const &Comment) const override;
+  void emitIfNotDef(std::string const &Name, bool Begin) const override;
   void emitIncludeToggle(std::string const &Name, bool Begin,
                          bool Newline = true,
                          bool UndefAtEnd = false) const override;
@@ -1419,11 +1424,16 @@ public:
   //---------------------------
 
   void instrInfoEmitSourceFileHeader() const override;
+  void instrInfoSetOperandInfoStr(
+      std::string &Res, Record const *OpR,
+      CGIOperandList::OperandInfo const &Op,
+      CGIOperandList::ConstraintInfo const &Constraint) const override;
   void instrInfoPrintDefList(
       const std::vector<Record *> &Uses, unsigned Num,
       std::string (*GetQualifiedName)(Record const *R)) const override;
-  void instrInfoEmitOperandInfoTabe(std::vector<std::string> const &OperandInfo,
-                                    unsigned N) const override;
+  void
+  instrInfoEmitOperandInfoTable(std::vector<std::string> const &OperandInfo,
+                                unsigned N) const override;
   void instrInfoEmitMCInstrDescHdr(std::string TargetName) const override;
   void instrInfoEmitMCInstrDescEnd() const override;
   void instrInfoEmitRecord(CodeGenSchedModels const &SchedModels,
