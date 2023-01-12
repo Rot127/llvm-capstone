@@ -1090,8 +1090,8 @@ void PrinterCapstone::decoderEmitterEmitSourceFileHeader() const {
 
 void PrinterCapstone::asmWriterEmitSourceFileHeader() const {
   emitDefaultSourceFileHeader(OS);
-  OS << "#include <capstone/platform.h>"
-     << "#include <assert.h>";
+  OS << "#include <capstone/platform.h>\n"
+     << "#include <assert.h>\n\n";
 }
 
 void PrinterCapstone::asmWriterEmitGetMnemonic(
