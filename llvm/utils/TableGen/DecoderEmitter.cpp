@@ -2077,7 +2077,7 @@ static void setPrinterParameters(CodeGenTarget &Target, PrinterLanguage PL,
     RFail = "MCDisassembler::Fail";
     break;
   case llvm::PRINTER_LANG_CAPSTONE_C:
-    RFail = "MCDisassemblerD_Fail";
+    RFail = "MCDisassembler_Fail";
     break;
   }
 }
