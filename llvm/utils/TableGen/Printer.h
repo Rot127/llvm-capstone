@@ -1126,6 +1126,9 @@ public:
   void regInfoEmitComposeSubRegIdxLaneMaskRev(
       std::string const &ClName,
       std::deque<CodeGenSubRegIndex> const &SubRegIndices) const override;
+  void
+  regInfoEmitIsConstantPhysReg(std::deque<CodeGenRegister> const &Regs,
+                               std::string const &ClassName) const override;
 
   //-------------------------
   // Backend: DecoderEmitter

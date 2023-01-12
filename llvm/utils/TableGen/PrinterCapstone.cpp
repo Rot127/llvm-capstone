@@ -68,7 +68,7 @@ void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
 void PrinterCapstone::regInfoEmitSourceFileHeader(
     std::string const &Desc) const {
   static unsigned Count = 0;
-  if (Count > 1) {
+  if (Count > 0) {
     // Only emit it once at the beginning.
     return;
   }
@@ -110,20 +110,6 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
       OS << "  " << TargetName << "_" << RC.getName() << "RegClassID"
          << " = " << RC.EnumValue << ",\n";
     OS << "\n};\n";
-  }
-
-  const std::vector<Record *> &RegAltNameIndices =
-      Target.getRegAltNameIndices();
-  // If the only definition is the default NoRegAltName, we don't need to
-  // emit anything.
-  if (RegAltNameIndices.size() > 1) {
-    OS << "\n// Register alternate name indices\n\n";
-    OS << "enum {\n";
-    for (unsigned I = 0, E = RegAltNameIndices.size(); I != E; ++I)
-      OS << "  " << TargetName << "_" << RegAltNameIndices[I]->getName()
-         << ",\t// " << I << "\n";
-    OS << "  NUM_TARGET_REG_ALT_NAMES = " << RegAltNameIndices.size() << "\n";
-    OS << "};\n";
   }
 
   auto &SubRegIndices = Bank.getSubRegIndices();
@@ -532,6 +518,10 @@ void PrinterCapstone::regInfoEmitComposeSubRegIdxLaneMaskRev(
     std::deque<CodeGenSubRegIndex> const &SubRegIndices) const {
   return;
 }
+
+void PrinterCapstone::regInfoEmitIsConstantPhysReg(
+    std::deque<CodeGenRegister> const &Regs,
+    std::string const &ClassName) const {}
 
 static std::string resolveTemplateDecoder(OperandInfo const &Op) {
   unsigned const B = Op.Decoder.find_first_of("<");
