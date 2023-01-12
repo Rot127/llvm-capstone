@@ -209,12 +209,6 @@ void PrinterCapstone::regInfoEmitRegUnitRoots(
   return;
 }
 
-static std::string getQualifiedNameCCS(CodeGenRegisterClass const &RC) {
-  if (RC.Namespace.empty())
-    return RC.getName();
-  return (RC.Namespace + "_" + RC.getName()).str();
-}
-
 static std::string getQualifiedNameCCS(const Record *R) {
   std::string Namespace;
   if (R->getValue("Namespace"))
@@ -278,14 +272,10 @@ void PrinterCapstone::regInfoEmitMCRegClassesTable(
     std::string const RCBitsSize =
         Order.empty() ? "0" : "sizeof(" + RCBitsName + ")";
     assert(isInt<8>(RC.CopyCost) && "Copy cost too large.");
-    uint32_t RegSize = 0;
-    if (RC.RSI.isSimple())
-      RegSize = RC.RSI.getSimple().RegSize;
-    OS << "  { " << RCName << ", " << RCBitsName << ", "
-       << RegClassStrings.get(RC.getName()) << ", " << RC.getOrder().size()
-       << ", " << RCBitsSize << ", " << getQualifiedNameCCS(RC) + "RegClassID"
-       << ", " << RegSize << ", " << RC.CopyCost << ", "
-       << (RC.Allocatable ? "true" : "false") << " },\n";
+    // For Capstone we are only interested in:
+    // RegClass Name, Size group and bit size
+    OS << "  { " << RCName << ", " << RCBitsName << ", " << RCBitsSize
+       << " },\n";
   }
 
   OS << "};\n\n";
@@ -3527,7 +3517,6 @@ void PrinterCapstone::printInsnOpMapEntry(
   DagInit *OutDI = Inst->TheDef->getValueAsDag("OutOperandList");
   unsigned NumDefs = OutDI->getNumArgs();
 
-  // Check if op is in in or out operands
   unsigned E = InDI->getNumArgs() + OutDI->getNumArgs();
   bool isOutOp;
   std::vector<OpData> InsOps;
@@ -3611,13 +3600,14 @@ void PrinterCapstone::printFeatureEnumEntry(
     StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &FeatureEnum) const {
   static std::set<std::string> Features;
-  
+
   for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
     std::string Feature = STF->TheDef->getName().str();
     if (Features.find(Feature) != Features.end())
       continue;
     Features.emplace(Feature);
-    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str();
+    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" +
+                                 STF->TheDef->getName().str();
     if (Features.size() == 1)
       FeatureEnum << " = 128";
     FeatureEnum << ",\n";
