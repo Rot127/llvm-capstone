@@ -46,26 +46,38 @@ void PrinterCapstone::emitNamespace(std::string const &Name, bool Begin,
 /// Used to control inclusion of a code block via a macro definition.
 void PrinterCapstone::emitIncludeToggle(std::string const &Name, bool Begin,
                                         bool Newline, bool UndefAtEnd) const {
-  if (Name == "GET_REGINFO_TARGET_DESC" || Name == "GET_REGINFO_HEADER" ||
-      Name == "GET_MNEMONIC_CHECKER" || Name == "GET_MNEMONIC_SPELL_CHECKER" ||
-      Name == "GET_MATCHER_IMPLEMENTATION" ||
-      Name == "GET_SUBTARGET_FEATURE_NAME" || Name == "GET_REGISTER_MATCHER" ||
-      Name == "GET_OPERAND_DIAGNOSTIC_TYPES" ||
-      Name == "GET_ASSEMBLER_HEADER" || Name == "GET_INSTRINFO_HEADER" ||
-      Name == "GET_INSTRINFO_HELPER_DECLS" || Name == "GET_INSTRINFO_HELPERS" ||
-      Name == "GET_INSTRINFO_CTOR_DTOR" ||
-      Name == "GET_INSTRINFO_OPERAND_ENUM" ||
-      Name == "GET_INSTRINFO_NAMED_OPS" ||
-      Name == "GET_INSTRINFO_OPERAND_TYPES_ENUM" ||
-      Name == "GET_INSTRINFO_OPERAND_TYPE" ||
-      Name == "GET_INSTRINFO_MEM_OPERAND_SIZE" ||
-      Name == "GET_INSTRINFO_LOGICAL_OPERAND_SIZE_MAP" ||
-      Name == "GET_INSTRINFO_LOGICAL_OPERAND_TYPE_MAP" ||
-      Name == "GET_INSTRINFO_MC_HELPER_DECLS" ||
-      Name == "GET_INSTRINFO_MC_HELPERS" ||
-      Name == "ENABLE_INSTR_PREDICATE_VERIFIER") {
+  std::set<std::string> Ignore = {"GET_REGINFO_TARGET_DESC",
+                                  "GET_REGINFO_HEADER",
+                                  "GET_MNEMONIC_CHECKER",
+                                  "GET_MNEMONIC_SPELL_CHECKER",
+                                  "GET_MATCHER_IMPLEMENTATION",
+                                  "GET_SUBTARGET_FEATURE_NAME",
+                                  "GET_REGISTER_MATCHER",
+                                  "GET_OPERAND_DIAGNOSTIC_TYPES",
+                                  "GET_ASSEMBLER_HEADER",
+                                  "GET_INSTRINFO_HEADER",
+                                  "GET_INSTRINFO_HELPER_DECLS",
+                                  "GET_INSTRINFO_HELPERS",
+                                  "GET_INSTRINFO_CTOR_DTOR",
+                                  "GET_INSTRINFO_OPERAND_ENUM",
+                                  "GET_INSTRINFO_NAMED_OPS",
+                                  "GET_INSTRINFO_OPERAND_TYPES_ENUM",
+                                  "GET_INSTRINFO_OPERAND_TYPE",
+                                  "GET_INSTRINFO_MEM_OPERAND_SIZE",
+                                  "GET_INSTRINFO_LOGICAL_OPERAND_SIZE_MAP",
+                                  "GET_INSTRINFO_LOGICAL_OPERAND_TYPE_MAP",
+                                  "GET_INSTRINFO_MC_HELPER_DECLS",
+                                  "GET_INSTRINFO_MC_HELPERS",
+                                  "ENABLE_INSTR_PREDICATE_VERIFIER",
+                                  "GET_SUBTARGETINFO_MC_DESC",
+                                  "GET_SUBTARGETINFO_TARGET_DESC",
+                                  "GET_SUBTARGETINFO_HEADER",
+                                  "GET_SUBTARGETINFO_CTOR",
+                                  "GET_STIPREDICATE_DECLS_FOR_MC_ANALYSIS",
+                                  "GET_STIPREDICATE_DEFS_FOR_MC_ANALYSIS",
+                                  "GET_SUBTARGETINFO_MACRO"};
+  if (Ignore.find(Name) != Ignore.end())
     return;
-  }
   if (Begin) {
     OS << "#ifdef " << Name << "\n";
     if (!UndefAtEnd)
@@ -552,7 +564,6 @@ static std::string resolveTemplateDecoder(OperandInfo const &Op) {
   std::string Args = Op.Decoder.substr(B + 1, E - B - 1);
   std::string Decoder =
       DecName + "_" + std::regex_replace(Args, std::regex("\\s*,\\s*"), "_");
-  PrintNote("DEFINE_" + DecName + "(" + Decoder + ", " + Args + ")");
   return Decoder;
 }
 
