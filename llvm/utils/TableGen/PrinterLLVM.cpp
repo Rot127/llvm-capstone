@@ -57,6 +57,8 @@ void PrinterBitVectorEmitter::print(raw_ostream &OS) {
 //
 
 PrinterLLVM::PrinterLLVM(formatted_raw_ostream &OS) : OS(OS) {}
+PrinterLLVM::PrinterLLVM(formatted_raw_ostream &OS, std::string TargetName)
+    : OS(OS), TargetName(TargetName) {}
 PrinterLLVM::PrinterLLVM(formatted_raw_ostream &OS,
                          std::string PredicateNamespace, std::string GPrefix,
                          std::string GPostfix, std::string ROK,

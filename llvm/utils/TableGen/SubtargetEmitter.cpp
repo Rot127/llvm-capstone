@@ -1239,10 +1239,10 @@ void EmitSubtarget(RecordKeeper &RK, raw_ostream &OS) {
   default:
     llvm_unreachable("Subtarget backend does not support the selected printer language.");
   case PRINTER_LANG_CPP:
-    PI = new PrinterLLVM(FOS);
+    PI = new PrinterLLVM(FOS, CGTarget.getName().str());
     break;
   case PRINTER_LANG_CAPSTONE_C:
-    PI = new PrinterCapstone(FOS);
+    PI = new PrinterCapstone(FOS, CGTarget.getName().str());
     break;
   }
   SubtargetEmitter(RK, CGTarget, *PI).run();

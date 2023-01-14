@@ -68,7 +68,7 @@ private:
   formatted_raw_ostream &OS;
 
   //-------------------------
-  // Backend: DecoderEmitter
+  // Backend: DecoderEmitter and Subtarget
   //-------------------------
   std::string TargetName;
   std::string PredicateNamespace;
@@ -98,6 +98,7 @@ private:
 
 public:
   PrinterLLVM(formatted_raw_ostream &OS);
+  PrinterLLVM(formatted_raw_ostream &OS, std::string TargetName);
 
   virtual ~PrinterLLVM();
 
