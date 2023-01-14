@@ -2530,15 +2530,15 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   }
 
   std::string TName = Target.getName().str();
-  std::string InsnMapFilename = TName + "MappingInsn.inc";
+  std::string InsnMapFilename = TName + "GenCSMappingInsn.inc";
   writeFile(InsnMapFilename, InsnMapStr);
-  InsnMapFilename = TName + "MappingInsnOp.inc";
+  InsnMapFilename = TName + "GenCSMappingInsnOp.inc";
   writeFile(InsnMapFilename, InsnOpMapStr);
-  InsnMapFilename = TName + "MappingInsnName.inc";
+  InsnMapFilename = TName + "GenCSMappingInsnName.inc";
   writeFile(InsnMapFilename, InsnNameMapStr);
-  InsnMapFilename = TName + "InsnEnum.inc";
+  InsnMapFilename = TName + "GenCSInsnEnum.inc";
   writeFile(InsnMapFilename, InsnEnumStr);
-  InsnMapFilename = TName + "FeatureEnum.inc";
+  InsnMapFilename = TName + "GenCSFeatureEnum.inc";
   writeFile(InsnMapFilename, FeatureEnumStr);
   InsnMapFilename = TName + "GenCSFeatureName.inc";
   writeFile(InsnMapFilename, FeatureNameArrayStr);
