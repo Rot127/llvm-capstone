@@ -2441,19 +2441,27 @@ void PrinterCapstone::printInsnNameMapEnumEntry(
 
 void PrinterCapstone::printFeatureEnumEntry(
     StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &FeatureEnum) const {
+    raw_string_ostream &FeatureEnum,
+    raw_string_ostream &FeatureNameArray) const {
   static std::set<std::string> Features;
+  std::string EnumName;
 
   for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
     std::string Feature = STF->TheDef->getName().str();
     if (Features.find(Feature) != Features.end())
       continue;
     Features.emplace(Feature);
-    FeatureEnum.indent(2) << TargetName.str() + "_FEATURE_" +
-                                 STF->TheDef->getName().str();
+
+    // Enum
+    EnumName = TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str();
+    FeatureEnum << EnumName;
     if (Features.size() == 1)
       FeatureEnum << " = 128";
     FeatureEnum << ",\n";
+
+    // Enum name map
+    FeatureNameArray << "{ " + EnumName + ", \"" +
+                            STF->TheDef->getName().str() + "\" },\n";
   }
 }
 
@@ -2499,11 +2507,13 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   std::string InsnNameMapStr;
   std::string InsnEnumStr;
   std::string FeatureEnumStr;
+  std::string FeatureNameArrayStr;
   raw_string_ostream InsnMap(InsnMapStr);
   raw_string_ostream InsnOpMap(InsnOpMapStr);
   raw_string_ostream InsnNameMap(InsnNameMapStr);
   raw_string_ostream InsnEnum(InsnEnumStr);
   raw_string_ostream FeatureEnum(FeatureEnumStr);
+  raw_string_ostream FeatureNameArray(FeatureNameArrayStr);
   addHeader(InsnMap, InsnOpMap, InsnNameMap, InsnEnum);
 
   // Currently we ignore any other Asm variant then the primary.
@@ -2516,7 +2526,7 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
     printInsnMapEntry(Target.getName(), MI, InsnMap);
     printInsnOpMapEntry(Target, MI, InsnOpMap);
     printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
-    printFeatureEnumEntry(Target.getName(), MI, FeatureEnum);
+    printFeatureEnumEntry(Target.getName(), MI, FeatureEnum, FeatureNameArray);
   }
 
   std::string TName = Target.getName().str();
@@ -2530,6 +2540,8 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   writeFile(InsnMapFilename, InsnEnumStr);
   InsnMapFilename = TName + "FeatureEnum.inc";
   writeFile(InsnMapFilename, FeatureEnumStr);
+  InsnMapFilename = TName + "GenCSFeatureName.inc";
+  writeFile(InsnMapFilename, FeatureNameArrayStr);
 }
 
 void PrinterCapstone::asmMatcherEmitSourceFileHeader(

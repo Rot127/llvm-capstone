@@ -943,7 +943,8 @@ public:
                                  raw_string_ostream &InsnEnum) const;
   void printFeatureEnumEntry(StringRef const &TargetName,
                              std::unique_ptr<MatchableInfo> const &MI,
-                             raw_string_ostream &FeatureEnum) const;
+                             raw_string_ostream &FeatureEnum,
+                             raw_string_ostream &FeatureNameArray) const;
 
   //--------------------------
   // General printing methods
