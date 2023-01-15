@@ -562,6 +562,8 @@ static std::string resolveTemplateDecoder(OperandInfo const &Op) {
   unsigned const E = Op.Decoder.find(">");
   std::string const &DecName = Op.Decoder.substr(0, B);
   std::string Args = Op.Decoder.substr(B + 1, E - B - 1);
+  Args = std::regex_replace(Args, std::regex("true"), "1");
+  Args = std::regex_replace(Args, std::regex("false"), "0");
   std::string Decoder =
       DecName + "_" + std::regex_replace(Args, std::regex("\\s*,\\s*"), "_");
   return Decoder;
