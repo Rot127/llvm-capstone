@@ -769,10 +769,9 @@ void PrinterCapstone::decoderEmitterEmitDecodeInstruction(
      << "      NumToSkip |= (*Ptr++) << 8; \\\n"
      << "      NumToSkip |= (*Ptr++) << 16; \\\n"
      << "      /* Check the predicate. */ \\\n"
-     << "      bool Pred; \\\n"
-     << "      if (!(Pred = checkDecoderPredicate(PIdx))) \\\n"
+     << "      bool Pred = checkDecoderPredicate(MI, PIdx); \\\n"
+     << "      if (!Pred) \\\n"
      << "        Ptr += NumToSkip; \\\n"
-     << "      (void)Pred; \\\n"
      << "      break; \\\n"
      << "    } \\\n"
      << "    case MCD_OPC_Decode: { \\\n"
@@ -1053,8 +1052,9 @@ void PrinterCapstone::decoderEmitterEmitPredicateFunction(
     PredicateSet &Predicates, unsigned Indentation) const {
   // The predicate function is just a big switch statement based on the
   // input predicate index.
-  OS.indent(Indentation) << "static bool checkDecoderPredicate(unsigned Idx"
-                         << ") {\n";
+  OS.indent(Indentation)
+      << "static bool checkDecoderPredicate(MCInst *Inst, unsigned Idx"
+      << ") {\n";
   Indentation += 2;
   if (!Predicates.empty()) {
     OS.indent(Indentation) << "switch (Idx) {\n";
@@ -1960,7 +1960,8 @@ void PrinterCapstone::instrInfoSetOperandInfoStr(
   if (OpR->isSubClassOf("RegisterOperand"))
     OpR = OpR->getValueAsDef("RegClass");
   if (OpR->isSubClassOf("RegisterClass"))
-    Res += OpR->getValueAsString("Namespace").str() + "_" + "RegClassID, ";
+    Res += OpR->getValueAsString("Namespace").str() + "_" +
+           OpR->getName().str() + "RegClassID, ";
   else if (OpR->isSubClassOf("PointerLikeRegClass"))
     Res += utostr(OpR->getValueAsInt("RegClassKind")) + ", ";
   else
@@ -2006,7 +2007,7 @@ void PrinterCapstone::instrInfoSetOperandInfoStr(
     Res += "MCOI_EARLY_CLOBBER";
   else {
     assert(Constraint.isTied());
-    Res += "MCOI_TIED_TO(" + utostr(Constraint.getTiedOperand()) + ")";
+    Res += "MCOI_TIED_TO";
   }
 }
 
@@ -2049,7 +2050,7 @@ void PrinterCapstone::instrInfoEmitOperandInfo(
     std::vector<std::string> const &OperandInfo,
     OperandInfoMapTy const &OpInfo) const {
   if (OperandInfo.empty())
-    OS << "nullptr";
+    OS << "0";
   else
     OS << "OperandInfo" << OpInfo.find(OperandInfo)->second;
 }
