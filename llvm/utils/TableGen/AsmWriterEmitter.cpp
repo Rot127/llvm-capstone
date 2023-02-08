@@ -258,7 +258,7 @@ void AsmWriterEmitter::EmitGetMnemonic(
   PI.asmWriterEmitGetMnemonic(Target.getName().str(), ClassName);
 
   // Build an aggregate string, and build a table of offsets into it.
-  SequenceToOffsetTable<std::string> StringTable;
+  SequenceToOffsetTable<std::string> StringTable(PrinterLLVM::getLanguage());
 
   /// OpcodeInfo - This encodes the index of the string to use for the first
   /// chunk of the output as well as indices used for operand printing.
@@ -402,7 +402,7 @@ void AsmWriterEmitter::EmitPrintInstruction(
 void AsmWriterEmitter::EmitRegisterNameString(
     StringRef AltName,
     const std::deque<CodeGenRegister> &Registers) {
-  SequenceToOffsetTable<std::string> StringTable;
+  SequenceToOffsetTable<std::string> StringTable(PrinterLLVM::getLanguage());
   SmallVector<std::string, 4> AsmNames(Registers.size());
   unsigned i = 0;
   for (const auto &Reg : Registers) {
