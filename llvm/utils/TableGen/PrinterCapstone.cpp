@@ -146,6 +146,20 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
     OS << "\n};\n";
   }
 
+  const std::vector<Record *> &RegAltNameIndices =
+      Target.getRegAltNameIndices();
+  // If the only definition is the default NoRegAltName, we don't need to
+  // emit anything.
+  if (RegAltNameIndices.size() > 1) {
+    OS << "\n// Register alternate name indices\n\n";
+    OS << "enum {\n";
+    for (unsigned I = 0, E = RegAltNameIndices.size(); I != E; ++I)
+      OS << "  " << TargetName << "_" << RegAltNameIndices[I]->getName()
+         << ",\t// " << I << "\n";
+    OS << "  NUM_TARGET_REG_ALT_NAMES = " << RegAltNameIndices.size() << "\n";
+    OS << "};\n";
+  }
+
   auto &SubRegIndices = Bank.getSubRegIndices();
   if (!SubRegIndices.empty()) {
     OS << "\n// Subregister indices\n\n";
