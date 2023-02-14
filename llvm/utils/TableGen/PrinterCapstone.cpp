@@ -27,6 +27,20 @@ static void emitDefaultSourceFileHeader(formatted_raw_ostream &OS) {
   OS << "/* Do not edit. */\n\n";
 }
 
+static void addHeader(raw_string_ostream &Stream) {
+  std::string HeaderComment =
+      "/* Capstone Disassembly Engine, https://www.capstone-engine.org */\n"
+      "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2019 */\n"
+      "/* By Rot127 <unisono@quyllur.org>, 2023 */\n"
+      "\n"
+      "/* Auto generated file. Do not edit. */\n"
+      "/* Code generator: "
+      "https://github.com/capstone-engine/capstone/tree/next/suite/auto-sync "
+      "*/\n\n";
+
+  Stream << HeaderComment;
+}
+
 namespace llvm {
 
 /// Prints `namespace <name> {` and `} // end namespace <name>` to the output
@@ -113,6 +127,10 @@ void PrinterCapstone::regInfoEmitSourceFileHeader(
 // runEnums - Print out enum values for all of the registers.
 void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
                                        CodeGenRegBank const &Bank) const {
+  std::string CSRegEnumStr;
+  raw_string_ostream CSRegEnum(CSRegEnumStr);
+  addHeader(CSRegEnum);
+
   const auto &Registers = Bank.getRegisters();
 
   // Register enums are stored as uint16_t in the tables. Make sure we'll fit.
@@ -122,14 +140,20 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
   std::string const TargetName = Target.getName().str();
 
   OS << "enum {\n  " << TargetName << "_NoRegister,\n";
+  CSRegEnum << "\t" << TargetName << "_REG_INVALID = 0,\n";
 
-  for (const auto &Reg : Registers)
+  for (const auto &Reg : Registers) {
     OS << "  " << TargetName << "_" << Reg.getName() << " = " << Reg.EnumValue
        << ",\n";
+    CSRegEnum << "\t" << TargetName << "_REG_" << Reg.getName() << " = "
+              << Reg.EnumValue << ",\n";
+  }
   assert(Registers.size() == Registers.back().EnumValue &&
          "Register enum value mismatch!");
   OS << "  NUM_TARGET_REGS // " << Registers.size() + 1 << "\n";
   OS << "};\n";
+  CSRegEnum << "\tARM_REG_ENDING, // " << Registers.size() + 1 << "\n";
+  writeFile(TargetName + "GenCSRegEnum.inc", CSRegEnumStr);
 
   const auto &RegisterClasses = Bank.getRegClasses();
   if (!RegisterClasses.empty()) {
@@ -2478,26 +2502,6 @@ void PrinterCapstone::printFeatureEnumEntry(
   }
 }
 
-static void addHeader(raw_string_ostream &InsnMap,
-                      raw_string_ostream &InsnOpMap,
-                      raw_string_ostream &InsnNameMap,
-                      raw_string_ostream &InsnEnum) {
-  std::string HeaderComment =
-      "/* Capstone Disassembly Engine, https://www.capstone-engine.org */\n"
-      "/* By Nguyen Anh Quynh <aquynh@gmail.com>, 2013-2019 */\n"
-      "/* By Rot127 <unisono@quyllur.org>, 2023 */\n"
-      "\n"
-      "/* Auto generated file. Do not edit. */\n"
-      "/* Code generator: "
-      "https://github.com/capstone-engine/capstone/tree/next/suite/auto-sync "
-      "*/\n\n";
-
-  InsnMap << HeaderComment;
-  InsnOpMap << HeaderComment;
-  InsnNameMap << HeaderComment;
-  InsnEnum << HeaderComment;
-}
-
 void PrinterCapstone::writeFile(std::string Filename,
                                 std::string const &Str) const {
   std::error_code EC;
@@ -2527,7 +2531,10 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   raw_string_ostream InsnEnum(InsnEnumStr);
   raw_string_ostream FeatureEnum(FeatureEnumStr);
   raw_string_ostream FeatureNameArray(FeatureNameArrayStr);
-  addHeader(InsnMap, InsnOpMap, InsnNameMap, InsnEnum);
+  addHeader(InsnMap);
+  addHeader(InsnOpMap);
+  addHeader(InsnNameMap);
+  addHeader(InsnEnum);
 
   // Currently we ignore any other Asm variant then the primary.
   Record *AsmVariant = Target.getAsmParserVariant(0);
