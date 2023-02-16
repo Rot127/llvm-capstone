@@ -2451,14 +2451,14 @@ void PrinterCapstone::printInsnOpMapEntry(
     PrintFatalNote("Inst has more then 7 operands: " + Inst->AsmString);
   }
   // Write the C struct of the Instruction operands.
-  InsnOpMap << "{ /* " + TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
+  InsnOpMap << "{{ /* " + TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
                    Inst->TheDef->getName() + " */\n";
   for (OpData const &OD : InsOps) {
     InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
                                " }, /* " + OD.OpAsm + " */\n";
   }
   InsnOpMap.indent(2) << "{ 0 }\n";
-  InsnOpMap << "},\n";
+  InsnOpMap << "}},\n";
 }
 
 void PrinterCapstone::printInsnNameMapEnumEntry(
