@@ -6045,4 +6045,251 @@ void PrinterLLVM::asmMatcherEmitComputeAssemblerAvailableFeatures(
       Info.SubtargetFeatures, OS);
 }
 
+void PrinterLLVM::searchableTablesEmitGenericEnum(
+    const GenericEnum &Enum) const {
+  OS << "enum " << Enum.Name << " {\n";
+  for (const auto &Entry : Enum.Entries)
+    OS << "  " << Entry->first << " = " << Entry->second << ",\n";
+  OS << "};\n";
+}
+
+void PrinterLLVM::searchableTablesEmitGenericTable(
+    const GenericTable &Enum) const {}
+
+void PrinterLLVM::searchableTablesEmitIfdef(const std::string Guard) const {
+  OS << "#ifdef " << Guard << "\n";
+}
+
+void PrinterLLVM::searchableTablesEmitEndif() const { OS << "#endif\n"; }
+
+void PrinterLLVM::searchableTablesEmitUndef(std::string const &Guard) const {
+  OS << "#undef " << Guard << "\n";
+}
+
+std::string PrinterLLVM::searchableTablesSearchableFieldType(
+    const GenericTable &Table, const SearchIndex &Index,
+    const GenericField &Field, TypeContext Ctx) const {
+  if (isa<StringRecTy>(Field.RecType)) {
+    if (Ctx == TypeInStaticStruct)
+      return "const char *";
+    if (Ctx == TypeInTempStruct)
+      return "std::string";
+    return "StringRef";
+  }
+  if (BitsRecTy *BI = dyn_cast<BitsRecTy>(Field.RecType)) {
+    unsigned NumBits = BI->getNumBits();
+    if (NumBits <= 8)
+      return "uint8_t";
+    if (NumBits <= 16)
+      return "uint16_t";
+    if (NumBits <= 32)
+      return "uint32_t";
+    if (NumBits <= 64)
+      return "uint64_t";
+    PrintFatalError(Index.Loc, Twine("In table '") + Table.Name +
+                                   "' lookup method '" + Index.Name +
+                                   "', key field '" + Field.Name +
+                                   "' of type bits is too large");
+  } else if (Field.Enum || Field.IsIntrinsic || Field.IsInstruction)
+    return "unsigned";
+  PrintFatalError(Index.Loc,
+                  Twine("In table '") + Table.Name + "' lookup method '" +
+                      Index.Name + "', key field '" + Field.Name +
+                      "' has invalid type: " + Field.RecType->getAsString());
+}
+
+std::string PrinterLLVM::searchableTablesPrimaryRepresentation(
+    SMLoc Loc, const GenericField &Field, Init *I,
+    CodeGenIntrinsic &Intrinsic) const {
+  if (StringInit *SI = dyn_cast<StringInit>(I)) {
+    if (Field.IsCode || SI->hasCodeFormat())
+      return std::string(SI->getValue());
+    else
+      return SI->getAsString();
+  } else if (BitsInit *BI = dyn_cast<BitsInit>(I))
+    return "0x" + utohexstr(getAsInt(BI));
+  else if (BitInit *BI = dyn_cast<BitInit>(I))
+    return BI->getValue() ? "true" : "false";
+  else if (Field.IsIntrinsic)
+    return "Intrinsic::" + Intrinsic.EnumName;
+  else if (Field.IsInstruction)
+    return I->getAsString();
+  else if (Field.Enum) {
+    auto *Entry = Field.Enum->EntryMap[cast<DefInit>(I)->getDef()];
+    if (!Entry)
+      PrintFatalError(Loc,
+                      Twine("Entry for field '") + Field.Name + "' is null");
+    return std::string(Entry->first);
+  }
+  PrintFatalError(Loc, Twine("invalid field type for field '") + Field.Name +
+                           "'; expected: bit, bits, string, or code");
+}
+
+void PrinterLLVM::searchableTablesEmitLookupDeclaration(
+    const GenericTable &Table, const SearchIndex &Index) const {
+  OS << "const " << Table.CppTypeName << " *" << Index.Name << "(";
+
+  ListSeparator LS;
+  for (const auto &Field : Index.Fields)
+    OS << LS
+       << searchableTablesSearchableFieldType(Table, Index, Field,
+                                              TypeInArgument)
+       << " " << Field.Name;
+  OS << ")";
+  OS << ";\n";
+}
+
+void PrinterLLVM::searchableTablesEmitIndexTypeStruct(
+    const GenericTable &Table, const SearchIndex &Index) const {
+  OS << "  struct IndexType {\n";
+  for (const auto &Field : Index.Fields) {
+    OS << "    "
+       << searchableTablesSearchableFieldType(Table, Index, Field,
+                                              TypeInStaticStruct)
+       << " " << Field.Name << ";\n";
+  }
+  OS << "    unsigned _index;\n";
+  OS << "  };\n";
+}
+
+void PrinterLLVM::searchableTablesEmitIndexArrayI() const {
+  OS << "  static const struct IndexType Index[] = {\n";
+}
+
+void PrinterLLVM::searchableTablesEmitIndexArrayII() const { OS << "    { "; }
+
+void PrinterLLVM::searchableTablesEmitIndexArrayIII(ListSeparator LS,
+                                                    std::string Repr) const {
+  OS << LS << Repr;
+}
+
+void PrinterLLVM::searchableTablesEmitIndexArrayIV(
+    std::pair<Record *, unsigned> const &Entry) const {
+  OS << ", " << Entry.second << " },\n";
+}
+void PrinterLLVM::searchableTablesEmitIndexArrayV() const { OS << "  };\n\n"; }
+
+void PrinterLLVM::searchableTablesEmitIsContiguousCase(
+    StringRef const &IndexName, const GenericTable &Table,
+    const SearchIndex &Index, bool IsPrimary) const {
+  OS << "  auto Table = makeArrayRef(" << IndexName << ");\n";
+  OS << "  size_t Idx = " << Index.Fields[0].Name << ";\n";
+  OS << "  return Idx >= Table.size() ? nullptr : ";
+  if (IsPrimary)
+    OS << "&Table[Idx]";
+  else
+    OS << "&" << Table.Name << "[Table[Idx]._index]";
+  OS << ";\n";
+  OS << "}\n";
+}
+
+void PrinterLLVM::searchableTablesEmitIfFieldCase(
+    const GenericField &Field, std::string const &FirstRepr,
+    std::string const &LastRepr) const {
+  OS << "  if ((" << Field.Name << " < " << FirstRepr << ") ||\n";
+  OS << "      (" << Field.Name << " > " << LastRepr << "))\n";
+  OS << "    return nullptr;\n\n";
+}
+
+void PrinterLLVM::searchableTablesEmitKeyTypeStruct(
+    const GenericTable &Table, const SearchIndex &Index) const {
+  OS << "  struct KeyType {\n";
+  for (const auto &Field : Index.Fields) {
+    OS << "    "
+       << searchableTablesSearchableFieldType(Table, Index, Field,
+                                              TypeInTempStruct)
+       << " " << Field.Name << ";\n";
+  }
+  OS << "  };\n";
+}
+
+void PrinterLLVM::searchableTablesEmitKeyArray(const GenericTable &Table,
+                                               const SearchIndex &Index,
+                                               bool IsPrimary) const {
+  OS << "  KeyType Key = {";
+  ListSeparator LS;
+  for (const auto &Field : Index.Fields) {
+    OS << LS << Field.Name;
+    if (isa<StringRecTy>(Field.RecType)) {
+      OS << ".upper()";
+      if (IsPrimary)
+        PrintFatalError(Index.Loc,
+                        Twine("In table '") + Table.Name +
+                            "', use a secondary lookup method for "
+                            "case-insensitive comparison of field '" +
+                            Field.Name + "'");
+    }
+  }
+  OS << "};\n";
+}
+
+void PrinterLLVM::searchableTablesEmitIndexLamda(
+    const SearchIndex &Index, StringRef const &IndexName,
+    StringRef const &IndexTypeName) const {
+  OS << "  auto Table = makeArrayRef(" << IndexName << ");\n";
+  OS << "  auto Idx = std::lower_bound(Table.begin(), Table.end(), Key,\n";
+  OS << "    [](const " << IndexTypeName << " &LHS, const KeyType &RHS) {\n";
+
+  for (const auto &Field : Index.Fields) {
+    if (isa<StringRecTy>(Field.RecType)) {
+      OS << "      int Cmp" << Field.Name << " = StringRef(LHS." << Field.Name
+         << ").compare(RHS." << Field.Name << ");\n";
+      OS << "      if (Cmp" << Field.Name << " < 0) return true;\n";
+      OS << "      if (Cmp" << Field.Name << " > 0) return false;\n";
+    } else if (Field.Enum) {
+      // Explicitly cast to unsigned, because the signedness of enums is
+      // compiler-dependent.
+      OS << "      if ((unsigned)LHS." << Field.Name << " < (unsigned)RHS."
+         << Field.Name << ")\n";
+      OS << "        return true;\n";
+      OS << "      if ((unsigned)LHS." << Field.Name << " > (unsigned)RHS."
+         << Field.Name << ")\n";
+      OS << "        return false;\n";
+    } else {
+      OS << "      if (LHS." << Field.Name << " < RHS." << Field.Name << ")\n";
+      OS << "        return true;\n";
+      OS << "      if (LHS." << Field.Name << " > RHS." << Field.Name << ")\n";
+      OS << "        return false;\n";
+    }
+  }
+}
+
+void PrinterLLVM::searchableTablesEmitReturns(const GenericTable &Table,
+                                              const SearchIndex &Index,
+                                              bool IsPrimary) const {
+  OS << "  if (Idx == Table.end()";
+
+  for (const auto &Field : Index.Fields)
+    OS << " ||\n      Key." << Field.Name << " != Idx->" << Field.Name;
+  OS << ")\n    return nullptr;\n";
+
+  if (IsPrimary)
+    OS << "  return &*Idx;\n";
+  else
+    OS << "  return &" << Table.Name << "[Idx->_index];\n";
+
+  OS << "}\n";
+}
+
+void PrinterLLVM::searchableTablesEmitMapI(const GenericTable &Table) const {
+  OS << "constexpr " << Table.CppTypeName << " " << Table.Name << "[] = {\n";
+}
+
+void PrinterLLVM::searchableTablesEmitMapII() const { OS << "  { "; }
+
+void PrinterLLVM::searchableTablesEmitMapIII(const GenericTable &Table,
+                                             ListSeparator LS,
+                                             GenericField const &Field,
+                                             CodeGenIntrinsic &Intrinsic,
+                                             Record *Entry) const {
+  OS << LS
+     << searchableTablesPrimaryRepresentation(
+            Table.Locs[0], Field, Entry->getValueInit(Field.Name), Intrinsic);
+}
+
+void PrinterLLVM::searchableTablesEmitMapIV(unsigned i) const {
+  OS << " }, // " << i << "\n";
+}
+
+void PrinterLLVM::searchableTablesEmitMapV() const { OS << "  };\n"; }
 } // end namespace llvm

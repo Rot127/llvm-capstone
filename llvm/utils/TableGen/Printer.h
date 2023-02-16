@@ -17,6 +17,7 @@
 #include "InstrInfoEmitterTypes.h"
 #include "PrinterTypes.h"
 #include "RegisterInfoEmitterTypes.h"
+#include "SearchableTablesTypes.h"
 #include "SubtargetEmitterTypes.h"
 #include "SubtargetFeatureInfo.h"
 #include "llvm/MC/MCInstrItineraries.h"
@@ -910,6 +911,67 @@ public:
   virtual void asmMatcherEmitApplyMnemonicAliasesIII() const;
   virtual void asmMatcherEmitApplyMnemonicAliasesIV() const;
   virtual void asmMatcherEmitApplyMnemonicAliasesV() const;
+
+  //---------------------------
+  // Backend: SearchableTables
+  //---------------------------
+
+  virtual void searchableTablesEmitGenericEnum(const GenericEnum &Enum) const;
+  virtual void searchableTablesEmitGenericTable(const GenericTable &Enum) const;
+  virtual void searchableTablesEmitIfdef(const std::string Guard) const;
+  virtual void searchableTablesEmitEndif() const;
+  virtual void searchableTablesEmitUndef(std::string const &Guard) const;
+  virtual void
+  searchableTablesEmitLookupDeclaration(const GenericTable &Table,
+                                        const SearchIndex &Index) const;
+  virtual std::string
+  searchableTablesPrimaryRepresentation(SMLoc Loc, const GenericField &Field,
+                                        Init *I,
+                                        CodeGenIntrinsic &Intrinsic) const;
+  virtual std::string searchableTablesSearchableFieldType(
+      const GenericTable &Table, const SearchIndex &Index,
+      const GenericField &Field, TypeContext Ctx) const;
+  virtual void
+  searchableTablesEmitKeyTypeStruct(const GenericTable &Table,
+                                    const SearchIndex &Index) const;
+
+  virtual void
+  searchableTablesEmitIfFieldCase(const GenericField &Field,
+                                  std::string const &FirstRepr,
+                                  std::string const &LastRepr) const;
+  virtual void searchableTablesEmitIsContiguousCase(StringRef const &IndexName,
+                                                    const GenericTable &Table,
+                                                    const SearchIndex &Index,
+                                                    bool IsPrimary) const;
+  virtual void searchableTablesEmitIndexArrayV() const;
+  virtual void searchableTablesEmitIndexArrayIV(
+      std::pair<Record *, unsigned> const &Entry) const;
+  virtual void searchableTablesEmitIndexArrayIII(ListSeparator LS,
+                                                 std::string Repr) const;
+  virtual void searchableTablesEmitIndexArrayII() const;
+  virtual void searchableTablesEmitIndexArrayI() const;
+  virtual void
+  searchableTablesEmitIndexTypeStruct(const GenericTable &Table,
+                                      const SearchIndex &Index) const;
+  virtual void searchableTablesEmitReturns(const GenericTable &Table,
+                                           const SearchIndex &Index,
+                                           bool IsPrimary) const;
+  virtual void
+  searchableTablesEmitIndexLamda(const SearchIndex &Index,
+                                 StringRef const &IndexName,
+                                 StringRef const &IndexTypeName) const;
+  virtual void searchableTablesEmitKeyArray(const GenericTable &Table,
+                                            const SearchIndex &Index,
+                                            bool IsPrimary) const;
+  virtual void searchableTablesEmitMapI(const GenericTable &Table) const;
+  virtual void searchableTablesEmitMapII() const;
+  virtual void searchableTablesEmitMapIII(const GenericTable &Table,
+                                          ListSeparator LS,
+                                          GenericField const &Field,
+                                          CodeGenIntrinsic &Intrinsic,
+                                          Record *Entry) const;
+  virtual void searchableTablesEmitMapIV(unsigned i) const;
+  virtual void searchableTablesEmitMapV() const;
 };
 
 //==============================
