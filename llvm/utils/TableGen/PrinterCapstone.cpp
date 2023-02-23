@@ -748,7 +748,6 @@ void PrinterCapstone::decoderEmitterEmitDecodeInstruction(
      << "  uint64_t CurFieldValue = 0; \\\n"
      << "  DecodeStatus S = MCDisassembler_Success; \\\n"
      << "  while (true) { \\\n"
-     << "    ptrdiff_t Loc = Ptr - DecodeTable; \\\n"
      << "    switch (*Ptr) { \\\n"
      << "    default: \\\n"
      << "      return MCDisassembler_Fail; \\\n"
