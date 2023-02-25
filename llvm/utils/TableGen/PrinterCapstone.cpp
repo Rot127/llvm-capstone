@@ -2512,7 +2512,7 @@ void PrinterCapstone::printOpPrintGroupEnum(
     raw_string_ostream &OpGroupEnum) const {
   static std::vector<std::string> OpGroups;
   if (OpGroups.empty()) {
-    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegImmShift,\n";
+    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegImmShift = 0,\n";
     OpGroups.emplace_back("RegImmShift");
   }
 
@@ -2521,8 +2521,9 @@ void PrinterCapstone::printOpPrintGroupEnum(
     std::string OpGroup = resolveTemplateCall(Op.PrinterMethodName).substr(5);
     if (std::find(OpGroups.begin(), OpGroups.end(), OpGroup) != OpGroups.end())
       continue;
+    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + " = "
+                          << OpGroups.size() << ",\n";
     OpGroups.emplace_back(OpGroup);
-    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + ",\n";
   }
 }
 
