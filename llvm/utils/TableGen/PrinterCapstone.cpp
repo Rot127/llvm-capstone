@@ -2534,6 +2534,8 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   addHeader(InsnOpMap);
   addHeader(InsnNameMap);
   addHeader(InsnEnum);
+  addHeader(FeatureEnum);
+  addHeader(FeatureNameArray);
 
   // Currently we ignore any other Asm variant then the primary.
   Record *AsmVariant = Target.getAsmParserVariant(0);
