@@ -2512,8 +2512,8 @@ void PrinterCapstone::printOpPrintGroupEnum(
     raw_string_ostream &OpGroupEnum) const {
   static std::vector<std::string> OpGroups;
   if (OpGroups.empty()) {
-    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegShiftOffset,\n";
-    OpGroups.emplace_back("RegShiftOffset");
+    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegImmShift,\n";
+    OpGroups.emplace_back("RegImmShift");
   }
 
   CodeGenInstruction const *Inst = MI->getResultInst();
