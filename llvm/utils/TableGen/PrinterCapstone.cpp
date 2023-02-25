@@ -2510,10 +2510,19 @@ void PrinterCapstone::printFeatureEnumEntry(
 void PrinterCapstone::printOpPrintGroupEnum(
     StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &OpGroupEnum) const {
+  static const std::string Exceptions[] = {
+    // ARM Operand groups which are used, but are not passed here.
+    "RegImmShift",
+    "LdStmModeOperand",
+    "MandatoryInvertedPredicateOperand"
+  };
   static std::vector<std::string> OpGroups;
   if (OpGroups.empty()) {
-    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegImmShift = 0,\n";
-    OpGroups.emplace_back("RegImmShift");
+   for (auto OpGroup : Exceptions) {
+      OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + " = "
+                            << OpGroups.size() << ",\n";
+      OpGroups.emplace_back(OpGroup);
+    }
   }
 
   CodeGenInstruction const *Inst = MI->getResultInst();
