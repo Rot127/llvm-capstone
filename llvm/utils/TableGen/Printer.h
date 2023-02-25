@@ -1007,6 +1007,9 @@ public:
                              std::unique_ptr<MatchableInfo> const &MI,
                              raw_string_ostream &FeatureEnum,
                              raw_string_ostream &FeatureNameArray) const;
+  void printOpPrintGroupEnum(StringRef const &TargetName,
+                            std::unique_ptr<MatchableInfo> const &MI,
+                            raw_string_ostream &InsnMap) const;
 
   //--------------------------
   // General printing methods

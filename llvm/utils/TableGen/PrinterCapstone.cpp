@@ -596,8 +596,11 @@ void PrinterCapstone::regInfoEmitIsConstantPhysReg(
     std::string const &ClassName) const {}
 
 static std::string resolveTemplateCall(std::string const &Dec) {
-  unsigned const B = Dec.find_first_of("<");
-  unsigned const E = Dec.find(">");
+  unsigned long const B = Dec.find_first_of("<");
+  unsigned long const E = Dec.find(">");
+  if (B == std::string::npos) {
+    return Dec;
+  }
   std::string const &DecName = Dec.substr(0, B);
   std::string Args = Dec.substr(B + 1, E - B - 1);
   Args = std::regex_replace(Args, std::regex("true"), "1");
@@ -2501,6 +2504,28 @@ void PrinterCapstone::printFeatureEnumEntry(
   }
 }
 
+/// Emits enum entries for each operand group.
+/// The operand group name is equal printer method of the operand.
+/// printSORegRegOperand -> SORegReg
+void PrinterCapstone::printOpPrintGroupEnum(
+    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
+    raw_string_ostream &OpGroupEnum) const {
+  static std::vector<std::string> OpGroups;
+  if (OpGroups.empty()) {
+    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_RegShiftOffset,\n";
+    OpGroups.emplace_back("RegShiftOffset");
+  }
+
+  CodeGenInstruction const *Inst = MI->getResultInst();
+  for (const CGIOperandList::OperandInfo &Op : Inst->Operands) {
+    std::string OpGroup = resolveTemplateCall(Op.PrinterMethodName).substr(5);
+    if (std::find(OpGroups.begin(), OpGroups.end(), OpGroup) != OpGroups.end())
+      continue;
+    OpGroups.emplace_back(OpGroup);
+    OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + ",\n";
+  }
+}
+
 void PrinterCapstone::writeFile(std::string Filename,
                                 std::string const &Str) const {
   std::error_code EC;
@@ -2524,18 +2549,21 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   std::string InsnEnumStr;
   std::string FeatureEnumStr;
   std::string FeatureNameArrayStr;
+  std::string OpGroupStr;
   raw_string_ostream InsnMap(InsnMapStr);
   raw_string_ostream InsnOpMap(InsnOpMapStr);
   raw_string_ostream InsnNameMap(InsnNameMapStr);
   raw_string_ostream InsnEnum(InsnEnumStr);
   raw_string_ostream FeatureEnum(FeatureEnumStr);
   raw_string_ostream FeatureNameArray(FeatureNameArrayStr);
+  raw_string_ostream OpGroups(OpGroupStr);
   addHeader(InsnMap);
   addHeader(InsnOpMap);
   addHeader(InsnNameMap);
   addHeader(InsnEnum);
   addHeader(FeatureEnum);
   addHeader(FeatureNameArray);
+  addHeader(OpGroups);
 
   // Currently we ignore any other Asm variant then the primary.
   Record *AsmVariant = Target.getAsmParserVariant(0);
@@ -2548,6 +2576,7 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
     printInsnOpMapEntry(Target, MI, InsnOpMap);
     printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
     printFeatureEnumEntry(Target.getName(), MI, FeatureEnum, FeatureNameArray);
+    printOpPrintGroupEnum(Target.getName(), MI, OpGroups);
   }
 
   std::string TName = Target.getName().str();
@@ -2563,6 +2592,8 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   writeFile(InsnMapFilename, FeatureEnumStr);
   InsnMapFilename = TName + "GenCSFeatureName.inc";
   writeFile(InsnMapFilename, FeatureNameArrayStr);
+  InsnMapFilename = TName + "GenCSOpGroup.inc";
+  writeFile(InsnMapFilename, OpGroupStr);
 }
 
 void PrinterCapstone::asmMatcherEmitSourceFileHeader(
