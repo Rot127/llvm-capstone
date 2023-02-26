@@ -1529,12 +1529,15 @@ void PrinterCapstone::asmWriterEmitPrintAliasInstrBody(
     bool PassSubtarget) const {
   OS.indent(2) << "static const PatternsForOpcode OpToPatterns[] = {\n";
   OS << OpcodeO.str();
+  OS.indent(2) << "{0},"; // Null terminated to ease binary search.
   OS.indent(2) << "};\n\n";
   OS.indent(2) << "static const AliasPattern Patterns[] = {\n";
   OS << PatternO.str();
+  OS.indent(2) << "{0},";
   OS.indent(2) << "};\n\n";
   OS.indent(2) << "static const AliasPatternCond Conds[] = {\n";
   OS << CondO.str();
+  OS.indent(2) << "{0},";
   OS.indent(2) << "};\n\n";
   OS.indent(2) << "static const char AsmStrings[] =\n";
   for (const auto &P : AsmStrings) {
