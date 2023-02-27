@@ -12,11 +12,14 @@
 
 #include "Printer.h"
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/TableGen/TableGenBackend.h"
+#include <algorithm>
 #include <regex>
+#include <unordered_map>
 
 static void emitDefaultSourceFileHeader(formatted_raw_ostream &OS) {
   OS << "/* Capstone Disassembly Engine, http://www.capstone-engine.org */\n";
@@ -2456,8 +2459,8 @@ void PrinterCapstone::printInsnOpMapEntry(
     PrintFatalNote("Inst has more then 7 operands: " + Inst->AsmString);
   }
   // Write the C struct of the Instruction operands.
-  InsnOpMap << "{{ /* " + TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
-                   Inst->TheDef->getName() + " */\n";
+  InsnOpMap << "{{ /* " + TargetName + "_" + Inst->TheDef->getName() + " - " +
+                   TargetName + "_INS_" + MI->Mnemonic.upper() + " - " + Inst->AsmString +  " */\n";
   for (OpData const &OD : InsOps) {
     InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
                                " }, /* " + OD.OpAsm + " */\n";
@@ -2469,14 +2472,13 @@ void PrinterCapstone::printInsnOpMapEntry(
 void PrinterCapstone::printInsnNameMapEnumEntry(
     StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &InsnNameMap, raw_string_ostream &InsnEnum) const {
-  static std::set<std::string> CSInsn;
+  static std::set<StringRef> MnemonicsSeen;
   StringRef Mnemonic = MI->Mnemonic;
-  if (CSInsn.find(Mnemonic.str()) != CSInsn.end())
-    // Instruction already emitted.
+  if (MnemonicsSeen.find(Mnemonic) != MnemonicsSeen.end())
     return;
-  std::string EnumName = TargetName.str() + "_INS_" + Mnemonic.upper();
-  CSInsn.emplace(Mnemonic);
+  MnemonicsSeen.emplace(Mnemonic);
 
+  std::string EnumName = TargetName.str() + "_INS_" + Mnemonic.upper();
   InsnNameMap.indent(2) << "\"" + Mnemonic + "\", // " + EnumName + "\n";
   InsnEnum.indent(2) << EnumName + ",\n";
 }
@@ -2514,28 +2516,25 @@ void PrinterCapstone::printOpPrintGroupEnum(
     StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &OpGroupEnum) const {
   static const std::string Exceptions[] = {
-    // ARM Operand groups which are used, but are not passed here.
-    "RegImmShift",
-    "LdStmModeOperand",
-    "MandatoryInvertedPredicateOperand"
-  };
-  static std::vector<std::string> OpGroups;
+      // ARM Operand groups which are used, but are not passed here.
+      "RegImmShift", "LdStmModeOperand", "MandatoryInvertedPredicateOperand"};
+  static std::set<std::string> OpGroups;
   if (OpGroups.empty()) {
-   for (auto OpGroup : Exceptions) {
+    for (auto OpGroup : Exceptions) {
       OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + " = "
                             << OpGroups.size() << ",\n";
-      OpGroups.emplace_back(OpGroup);
+      OpGroups.emplace(OpGroup);
     }
   }
 
   CodeGenInstruction const *Inst = MI->getResultInst();
   for (const CGIOperandList::OperandInfo &Op : Inst->Operands) {
     std::string OpGroup = resolveTemplateCall(Op.PrinterMethodName).substr(5);
-    if (std::find(OpGroups.begin(), OpGroups.end(), OpGroup) != OpGroups.end())
+    if (OpGroups.find(OpGroup) != OpGroups.end())
       continue;
     OpGroupEnum.indent(2) << TargetName + "_OP_GROUP_" + OpGroup + " = "
                           << OpGroups.size() << ",\n";
-    OpGroups.emplace_back(OpGroup);
+    OpGroups.emplace(OpGroup);
   }
 }
 
@@ -2553,7 +2552,7 @@ void PrinterCapstone::writeFile(std::string Filename,
 /// This function emits all the mapping files and
 /// Instruction enum for the current architecture.
 void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
-                                               AsmMatcherInfo const &Info,
+                                               AsmMatcherInfo &Info,
                                                StringToOffsetTable &StringTable,
                                                unsigned VariantCount) const {
   std::string InsnMapStr;
@@ -2582,14 +2581,53 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   Record *AsmVariant = Target.getAsmParserVariant(0);
   int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
 
+  /// All our genertated tables and enums for CS mapping must have the same
+  /// order as the InstrInfo instruction enum. This class sorts them after it.
+  struct EnumSortComparator {
+    // CGI name to position in InstrInfo Instruction enum
+    std::map<const StringRef, int> InstMap;
+
+    EnumSortComparator(const CodeGenTarget &Target) {
+      ArrayRef<const CodeGenInstruction *> EnumOrdered =
+          Target.getInstructionsByEnumValue();
+      for (size_t I = 0; I < EnumOrdered.size(); ++I) {
+        const CodeGenInstruction *CGI = EnumOrdered[I];
+        InstMap[CGI->TheDef->getName()] = I;
+      }
+    }
+
+    bool operator()(const std::unique_ptr<MatchableInfo> &MI1,
+                    const std::unique_ptr<MatchableInfo> &MI2) const {
+      const CodeGenInstruction *CGI1 = MI1->getResultInst();
+      const CodeGenInstruction *CGI2 = MI2->getResultInst();
+      return InstMap.at(CGI1->TheDef->getName()) <
+             InstMap.at(CGI2->TheDef->getName());
+    }
+  };
+
+  // Sort the Mathables like the instructions for enums.
+  EnumSortComparator InstEnum(Target);
+  sort(Info.Matchables, InstEnum);
+
+  std::set<StringRef> InstSeen;
   for (const auto &MI : Info.Matchables) {
     if (MI->AsmVariantID != AsmVariantNo)
       continue;
-    printInsnMapEntry(Target.getName(), MI, InsnMap);
-    printInsnOpMapEntry(Target, MI, InsnOpMap);
     printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
     printFeatureEnumEntry(Target.getName(), MI, FeatureEnum, FeatureNameArray);
     printOpPrintGroupEnum(Target.getName(), MI, OpGroups);
+
+    const CodeGenInstruction *CGI = MI->getResultInst();
+    if ((MI->TheDef->getName().find("anonymous") != std::string::npos) &&
+      MI->Mnemonic != "yield")
+      // Hint instructions have the Mnemonic yield.
+      continue;
+    if (find(InstSeen, MI->TheDef->getName()) != InstSeen.end())
+      continue;
+    InstSeen.emplace(MI->TheDef->getName());
+    printInsnMapEntry(Target.getName(), MI, InsnMap);
+
+    printInsnOpMapEntry(Target, MI, InsnOpMap);
   }
 
   std::string TName = Target.getName().str();

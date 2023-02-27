@@ -5737,7 +5737,7 @@ void PrinterLLVM::asmMatcherEmitMnemonicTable(
 }
 
 void PrinterLLVM::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
-                                           AsmMatcherInfo const &Info,
+                                           AsmMatcherInfo &Info,
                                            StringToOffsetTable &StringTable,
                                            unsigned VariantCount) const {
   for (unsigned VC = 0; VC != VariantCount; ++VC) {
@@ -6100,7 +6100,7 @@ std::string PrinterLLVM::searchableTablesSearchableFieldType(
 
 std::string PrinterLLVM::searchableTablesPrimaryRepresentation(
     SMLoc Loc, const GenericField &Field, Init *I,
-    CodeGenIntrinsic &Intrinsic) const {
+    CodeGenIntrinsic const &Intrinsic) const {
   if (StringInit *SI = dyn_cast<StringInit>(I)) {
     if (Field.IsCode || SI->hasCodeFormat())
       return std::string(SI->getValue());

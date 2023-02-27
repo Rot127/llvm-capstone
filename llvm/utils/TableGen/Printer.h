@@ -885,7 +885,7 @@ public:
   virtual void
   asmMatcherEmitMnemonicTable(StringToOffsetTable &StringTable) const;
   virtual void asmMatcherEmitMatchTable(CodeGenTarget const &Target,
-                                        AsmMatcherInfo const &Info,
+                                        AsmMatcherInfo &Info,
                                         StringToOffsetTable &StringTable,
                                         unsigned VariantCount) const;
   virtual void asmMatcherEmitMatchRegisterName(
@@ -924,10 +924,9 @@ public:
   virtual void
   searchableTablesEmitLookupDeclaration(const GenericTable &Table,
                                         const SearchIndex &Index) const;
-  virtual std::string
-  searchableTablesPrimaryRepresentation(SMLoc Loc, const GenericField &Field,
-                                        Init *I,
-                                        CodeGenIntrinsic &Intrinsic) const;
+  virtual std::string searchableTablesPrimaryRepresentation(
+      SMLoc Loc, const GenericField &Field, Init *I,
+      CodeGenIntrinsic const &Intrinsic) const;
   virtual std::string searchableTablesSearchableFieldType(
       const GenericTable &Table, const SearchIndex &Index,
       const GenericField &Field, TypeContext Ctx) const;
@@ -1747,7 +1746,7 @@ public:
   void
   asmMatcherEmitMnemonicTable(StringToOffsetTable &StringTable) const override;
   void asmMatcherEmitMatchTable(CodeGenTarget const &Target,
-                                AsmMatcherInfo const &Info,
+                                AsmMatcherInfo &Info,
                                 StringToOffsetTable &StringTable,
                                 unsigned VariantCount) const override;
   void asmMatcherEmitMatchRegisterName(
