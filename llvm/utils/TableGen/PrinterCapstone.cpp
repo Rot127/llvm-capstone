@@ -1239,7 +1239,7 @@ void PrinterCapstone::asmWriterEmitPrintInstruction(
      << "SStream *O) {\n";
 
   // Emit the initial tab character.
-  OS << "  SStream_concat0(O, \"\\t\");\n";
+  OS << "  SStream_concat0(O, \"\");\n";
 
   // Emit the starting string.
   OS << "  MnemonicBitsInfo MnemonicInfo = getMnemonic(MI, O);\n\n";
