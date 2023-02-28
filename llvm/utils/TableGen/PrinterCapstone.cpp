@@ -2383,6 +2383,18 @@ static std::string getCSOperandType(Record const *OpRec) {
   return OperandType;
 }
 
+static std::string getSecondaryOperandType(Record *Op) {
+  DagInit *DAGOpInfo = Op->getValueAsDag("MIOperandInfo");
+  std::string SecondaryOperandType;
+  if (DAGOpInfo->getNumArgs() != 0) {
+    Record *InstOpRec = cast<DefInit>(DAGOpInfo->getArg(0))->getDef();
+    SecondaryOperandType = getCSOperandType(InstOpRec);
+  }
+  if (!SecondaryOperandType.empty())
+    return " | " + SecondaryOperandType;
+  return " | CS_OP_IMM";
+}
+
 void PrinterCapstone::printInsnOpMapEntry(
     CodeGenTarget const &Target, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &InsnOpMap) const {
@@ -2430,6 +2442,9 @@ void PrinterCapstone::printInsnOpMapEntry(
     std::string OperandType = getCSOperandType(Rec);
     if (OperandType == "")
       continue;
+    if (OperandType == "CS_OP_MEM") {
+      OperandType += getSecondaryOperandType(Rec);
+    }
 
     // Check if Operand was already seen before (as In or Out operand).
     // If so update its access flags.
@@ -2460,7 +2475,8 @@ void PrinterCapstone::printInsnOpMapEntry(
   }
   // Write the C struct of the Instruction operands.
   InsnOpMap << "{{ /* " + TargetName + "_" + Inst->TheDef->getName() + " - " +
-                   TargetName + "_INS_" + MI->Mnemonic.upper() + " - " + Inst->AsmString +  " */\n";
+                   TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
+                   Inst->AsmString + " */\n";
   for (OpData const &OD : InsOps) {
     InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
                                " }, /* " + OD.OpAsm + " */\n";
@@ -2617,9 +2633,8 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
     printFeatureEnumEntry(Target.getName(), MI, FeatureEnum, FeatureNameArray);
     printOpPrintGroupEnum(Target.getName(), MI, OpGroups);
 
-    const CodeGenInstruction *CGI = MI->getResultInst();
     if ((MI->TheDef->getName().find("anonymous") != std::string::npos) &&
-      MI->Mnemonic != "yield")
+        MI->Mnemonic != "yield")
       // Hint instructions have the Mnemonic yield.
       continue;
     if (find(InstSeen, MI->TheDef->getName()) != InstSeen.end())
