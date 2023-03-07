@@ -2395,6 +2395,36 @@ static std::string getSecondaryOperandType(Record *Op) {
   return " | CS_OP_IMM";
 }
 
+static std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
+  MVT::SimpleValueType VT;
+  std::vector<Record *> OpDataTypes;
+  if (OperandType == "CS_OP_REG") {
+    OpDataTypes = Op->getValueAsListOfDefs("RegTypes");
+  } else {
+    Record *OpType = Op->getValueAsDef("Type");
+    VT = getValueType(OpType);
+    bool IsFloat = false;
+    for (uint8_t V = MVT::SimpleValueType::FIRST_FP_VALUETYPE;
+         V <= MVT::SimpleValueType::LAST_FP_VALUETYPE; V++)
+      IsFloat |= (VT == V);
+
+    if (IsFloat)
+      OperandType = (OperandType.find("MEM") != std::string::npos)
+                        ? "CS_OP_MEM | CS_OP_FP"
+                        : "CS_OP_FP";
+    StringRef EnumVT = getEnumName(VT);
+    return "{ CS_DATA_TYPE_" + EnumVT.substr(5).str() + ", CS_DATA_TYPE_LAST }";
+  }
+
+  std::string DataTypes = "{ ";
+  for (Record *Type : OpDataTypes) {
+    StringRef EnumVT = getEnumName(getValueType(Type));
+    DataTypes += "CS_DATA_TYPE_" + EnumVT.substr(5).str() + ", ";
+  }
+  DataTypes += "CS_DATA_TYPE_LAST }";
+  return DataTypes;
+}
+
 void PrinterCapstone::printInsnOpMapEntry(
     CodeGenTarget const &Target, std::unique_ptr<MatchableInfo> const &MI,
     raw_string_ostream &InsnOpMap) const {
@@ -2403,6 +2433,7 @@ void PrinterCapstone::printInsnOpMapEntry(
     Record *Rec;
     std::string OpAsm;
     std::string OpType;
+    std::string DataTypes;
     unsigned
         Access; ///< 0b00 = unkown, 0b01 = In, 0b10 = Out, 0b11 = In and Out
     std::string str() const {
@@ -2418,14 +2449,14 @@ void PrinterCapstone::printInsnOpMapEntry(
   unsigned NumDefs = OutDI->getNumArgs();
 
   unsigned E = InDI->getNumArgs() + OutDI->getNumArgs();
-  bool isOutOp;
+  bool IsOutOp;
   std::vector<OpData> InsOps;
   // Interate over every In and Out operand and get its Def.
   for (unsigned I = 0; I != E; ++I) {
     Init *ArgInit;
     StringRef ArgName;
-    isOutOp = I < NumDefs;
-    if (isOutOp) {
+    IsOutOp = I < NumDefs;
+    if (IsOutOp) {
       ArgInit = OutDI->getArg(I);
       ArgName = OutDI->getArgNameStr(I);
     } else {
@@ -2446,6 +2477,14 @@ void PrinterCapstone::printInsnOpMapEntry(
       OperandType += getSecondaryOperandType(Rec);
     }
 
+    std::string OpDataTypes;
+    if (!Rec->getValue("RegTypes") && OperandType == "CS_OP_REG") {
+      OpDataTypes =
+          getOperandDataTypes(Rec->getValueAsDef("RegClass"), OperandType);
+    } else {
+      OpDataTypes = getOperandDataTypes(Rec, OperandType);
+    }
+
     // Check if Operand was already seen before (as In or Out operand).
     // If so update its access flags.
     bool OpExists = false;
@@ -2455,13 +2494,13 @@ void PrinterCapstone::printInsnOpMapEntry(
           OD.OpAsm == (ArgName.str() + "_src") ||
           OD.OpAsm + "_src" == ArgName.str()) {
         OpExists = true;
-        OD.Access |= isOutOp ? 2 : 1;
+        OD.Access |= IsOutOp ? 2 : 1;
         break;
       }
     }
     if (!OpExists) {
-      unsigned flag = isOutOp ? 2 : 1;
-      OpData OD = {Rec, ArgName.str(), OperandType, flag};
+      unsigned Flag = IsOutOp ? 2 : 1;
+      OpData OD = {Rec, ArgName.str(), OperandType, OpDataTypes, Flag};
       InsOps.emplace_back(OD);
     }
   }
@@ -2474,12 +2513,14 @@ void PrinterCapstone::printInsnOpMapEntry(
     PrintFatalNote("Inst has more then 7 operands: " + Inst->AsmString);
   }
   // Write the C struct of the Instruction operands.
-  InsnOpMap << "{{ /* " + TargetName + "_" + Inst->TheDef->getName() + " - " +
+  InsnOpMap << "{ /* " + TargetName + "_" + Inst->TheDef->getName() + " - " +
                    TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
                    Inst->AsmString + " */\n";
+  InsnOpMap << "{\n";
   for (OpData const &OD : InsOps) {
     InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
-                               " }, /* " + OD.OpAsm + " */\n";
+                               ", "
+                        << OD.DataTypes << " }, /* " + OD.OpAsm + " */\n";
   }
   InsnOpMap.indent(2) << "{ 0 }\n";
   InsnOpMap << "}},\n";
