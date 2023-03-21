@@ -15,10 +15,10 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/Regex.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/TableGen/TableGenBackend.h"
 #include <algorithm>
-#include <regex>
 #include <unordered_map>
 
 static void emitDefaultSourceFileHeader(formatted_raw_ostream &OS) {
@@ -125,6 +125,16 @@ void PrinterCapstone::regInfoEmitSourceFileHeader(
   }
   emitDefaultSourceFileHeader(OS);
   ++Count;
+}
+
+void writeFile(std::string Filename, std::string const &Str) {
+  std::error_code EC;
+  ToolOutputFile InsnMapFile(Filename, EC, sys::fs::OF_Text);
+  if (EC)
+    PrintFatalNote("Could no write \"" + Filename + "\" Error:\n" +
+                   EC.message());
+  InsnMapFile.os() << Str;
+  InsnMapFile.keep();
 }
 
 // runEnums - Print out enum values for all of the registers.
@@ -606,10 +616,9 @@ static std::string resolveTemplateCall(std::string const &Dec) {
   }
   std::string const &DecName = Dec.substr(0, B);
   std::string Args = Dec.substr(B + 1, E - B - 1);
-  Args = std::regex_replace(Args, std::regex("true"), "1");
-  Args = std::regex_replace(Args, std::regex("false"), "0");
-  std::string Decoder =
-      DecName + "_" + std::regex_replace(Args, std::regex("\\s*,\\s*"), "_");
+  Args = Regex("true").sub(Args, "1");
+  Args = Regex("false").sub(Args, "0");
+  std::string Decoder = DecName + "_" + Regex("\\s*,\\s*").sub(Args, "_");
   return Decoder;
 }
 
@@ -2035,7 +2044,7 @@ void PrinterCapstone::instrInfoSetOperandInfoStr(
   assert(!Op.OperandType.empty() && "Invalid operand type.");
   std::string OpTypeCpy = Op.OperandType;
   if (OpTypeCpy.find("VPRED") != std::string::npos)
-    OpTypeCpy = std::regex_replace(OpTypeCpy, std::regex("OPERAND"), "OP");
+    OpTypeCpy = Regex("OPERAND").sub(OpTypeCpy, "OP");
   Res += OpTypeCpy.replace(OpTypeCpy.find("::"), 2, "_");
 
   // Fill in constraint info.
@@ -2276,8 +2285,10 @@ void PrinterCapstone::instrInfoEmitComputeAssemblerAvailableFeatures(
 // Backend: AsmMatcher
 //--------------------------
 
-static std::string getImplicitUses(StringRef const &TargetName,
-                                   CodeGenInstruction const *Inst) {
+namespace {
+
+std::string getImplicitUses(StringRef const &TargetName,
+                            CodeGenInstruction const *Inst) {
   std::string Flags = "{ ";
   for (Record const *U : Inst->ImplicitUses) {
     assert(U->isSubClassOf("Register"));
@@ -2287,8 +2298,8 @@ static std::string getImplicitUses(StringRef const &TargetName,
   return Flags;
 }
 
-static std::string getImplicitDefs(StringRef const &TargetName,
-                                   CodeGenInstruction const *Inst) {
+std::string getImplicitDefs(StringRef const &TargetName,
+                            CodeGenInstruction const *Inst) {
   std::string Flags = "{ ";
   for (Record const *U : Inst->ImplicitDefs) {
     assert(U->isSubClassOf("Register"));
@@ -2298,47 +2309,62 @@ static std::string getImplicitDefs(StringRef const &TargetName,
   return Flags;
 }
 
-static std::string getReqFeatures(StringRef const &TargetName,
-                                  std::unique_ptr<MatchableInfo> const &MI) {
+std::string getReqFeatures(StringRef const &TargetName,
+                           std::unique_ptr<MatchableInfo> const &MI, bool UseMI,
+                           CodeGenInstruction const *CGI) {
   std::string Flags = "{ ";
-  CodeGenInstruction const *Inst = MI->getResultInst();
   std::string Mn = MI->Mnemonic.upper();
   // The debug if
-  if (Inst->isBranch && !Inst->isCall) {
+  if (CGI->isBranch && !CGI->isCall) {
     Flags += TargetName.str() + "_GRP_JUMP, ";
   }
-  if (Inst->isCall) {
+  if (CGI->isCall) {
     Flags += TargetName.str() + "_GRP_CALL, ";
   }
-  for (const auto &OpInfo : Inst->Operands.OperandList) {
+  for (const auto &OpInfo : CGI->Operands.OperandList) {
     if (OpInfo.OperandType == "MCOI::OPERAND_PCREL" &&
-        (Inst->isBranch || Inst->isIndirectBranch || Inst->isCall)) {
+        (CGI->isBranch || CGI->isIndirectBranch || CGI->isCall)) {
       Flags += TargetName.str() + "_GRP_BRANCH_RELATIVE, ";
     }
   }
   // The group flags <ARCH>_GRP_PRIVILEGE and <ARCH>_GRP_INT (interrupt) are not
   // handled here. LLVM does not provide this info.
-  for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
-    Flags +=
-        TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str() + ", ";
+  if (UseMI) {
+    for (SubtargetFeatureInfo const *STF : MI->RequiredFeatures) {
+      Flags +=
+          TargetName.str() + "_FEATURE_" + STF->TheDef->getName().str() + ", ";
+    }
   }
   Flags += "0 }";
   return Flags;
 }
 
-void PrinterCapstone::printInsnMapEntry(
-    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &InsnMap) const {
-  CodeGenInstruction const *Inst = MI->getResultInst();
+std::string getLLVMInstEnumName(StringRef const &TargetName,
+                                CodeGenInstruction const *CGI) {
+  std::string UniqueName = CGI->TheDef->getName().str();
+  std::string Enum = TargetName.str() + "_" + UniqueName;
+  return Enum;
+}
+
+void printInsnMapEntry(StringRef const &TargetName,
+                       std::unique_ptr<MatchableInfo> const &MI, bool UseMI,
+                       CodeGenInstruction const *CGI,
+                       raw_string_ostream &InsnMap, unsigned InsnNum) {
   InsnMap << "{\n";
-  InsnMap.indent(2) << TargetName << "_" << Inst->TheDef->getName();
-  InsnMap << ", " << TargetName << "_INS_" << MI->Mnemonic.upper() << ",\n";
+  InsnMap.indent(2) << getLLVMInstEnumName(TargetName, CGI) << " /* " << InsnNum
+                    << " */";
+  InsnMap << ", " << TargetName << "_INS_"
+          << (UseMI ? MI->Mnemonic.upper() : "INVALID") << ",\n";
   InsnMap.indent(2) << "#ifndef CAPSTONE_DIET\n";
-  InsnMap.indent(4) << getImplicitUses(TargetName, Inst) << ", ";
-  InsnMap << getImplicitDefs(TargetName, Inst) << ", ";
-  InsnMap << getReqFeatures(TargetName, MI) << ", ";
-  InsnMap << (Inst->isBranch ? "1" : "0") << ", ";
-  InsnMap << (Inst->isIndirectBranch ? "1" : "0") << "\n";
+  if (UseMI) {
+    InsnMap.indent(4) << getImplicitUses(TargetName, CGI) << ", ";
+    InsnMap << getImplicitDefs(TargetName, CGI) << ", ";
+    InsnMap << getReqFeatures(TargetName, MI, UseMI, CGI) << ", ";
+    InsnMap << (CGI->isBranch ? "1" : "0") << ", ";
+    InsnMap << (CGI->isIndirectBranch ? "1" : "0") << "\n";
+  } else {
+    InsnMap.indent(4) << "{ 0 }, { 0 }, { 0 }, 0, 0\n";
+  }
   InsnMap.indent(2) << "#endif\n";
   InsnMap << "},\n";
 }
@@ -2354,7 +2380,7 @@ static std::string getCSAccess(short Access) {
     PrintFatalNote("Invalid access flags set.");
 }
 
-static std::string getCSOperandType(Record const *OpRec) {
+std::string getCSOperandType(Record const *OpRec) {
   std::string OperandType;
   if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
     OperandType = std::string(OpRec->getValueAsString("OperandType"));
@@ -2362,11 +2388,11 @@ static std::string getCSOperandType(Record const *OpRec) {
            OpRec->isSubClassOf("PointerLikeRegClass"))
     OperandType = "OPERAND_REGISTER";
   else
-    return "";
+    return "CS_OP_INVALID";
   if (OperandType == "OPERAND_UNKNOWN") {
     if (OpRec->getValueAsDef("Type")->getValueAsInt("Size") == 0)
       // Pseudo type
-      return "";
+      return "CS_OP_INVALID";
     OperandType = "OPERAND_IMMEDIATE";
   }
   if (OperandType == "OPERAND_PCREL" || OperandType == "OPERAND_IMMEDIATE")
@@ -2377,13 +2403,13 @@ static std::string getCSOperandType(Record const *OpRec) {
     OperandType = "CS_OP_REG";
   // Arch dependent special Op types
   else if (OperandType == "OPERAND_VPRED_N" || OperandType == "OPERAND_VPRED_R")
-    return "";
+    return "CS_OP_INVALID";
   else
     PrintFatalNote("Unhandled OperandType: " + OperandType);
   return OperandType;
 }
 
-static std::string getSecondaryOperandType(Record *Op) {
+std::string getSecondaryOperandType(Record *Op) {
   DagInit *DAGOpInfo = Op->getValueAsDag("MIOperandInfo");
   std::string SecondaryOperandType;
   if (DAGOpInfo->getNumArgs() != 0) {
@@ -2395,7 +2421,7 @@ static std::string getSecondaryOperandType(Record *Op) {
   return " | CS_OP_IMM";
 }
 
-static std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
+std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
   MVT::SimpleValueType VT;
   std::vector<Record *> OpDataTypes;
   if (OperandType == "CS_OP_REG") {
@@ -2425,10 +2451,10 @@ static std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
   return DataTypes;
 }
 
-void PrinterCapstone::printInsnOpMapEntry(
-    CodeGenTarget const &Target, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &InsnOpMap) const {
-
+void printInsnOpMapEntry(CodeGenTarget const &Target,
+                         std::unique_ptr<MatchableInfo> const &MI, bool UseMI,
+                         CodeGenInstruction const *CGI,
+                         raw_string_ostream &InsnOpMap, unsigned InsnNum) {
   typedef struct OpData {
     Record *Rec;
     std::string OpAsm;
@@ -2441,11 +2467,23 @@ void PrinterCapstone::printInsnOpMapEntry(
              " Access: " + std::to_string(Access);
     }
   } OpData;
-
   StringRef TargetName = Target.getName();
-  CodeGenInstruction const *Inst = MI->getResultInst();
-  DagInit *InDI = Inst->TheDef->getValueAsDag("InOperandList");
-  DagInit *OutDI = Inst->TheDef->getValueAsDag("OutOperandList");
+
+  // Instruction without mnemonic.
+  if (!UseMI) {
+    std::string LLVMEnum = getLLVMInstEnumName(TargetName, CGI);
+    // Write the C struct of the Instruction operands.
+    InsnOpMap << "{ /* " + LLVMEnum + " (" << InsnNum
+              << ") - " + TargetName + "_INS_" +
+                     (UseMI ? MI->Mnemonic.upper() : "INVALID") + " - " +
+                     CGI->AsmString + " */\n";
+    InsnOpMap << " 0 \n";
+    InsnOpMap << "},\n";
+    return;
+  }
+
+  DagInit *InDI = CGI->TheDef->getValueAsDag("InOperandList");
+  DagInit *OutDI = CGI->TheDef->getValueAsDag("OutOperandList");
   unsigned NumDefs = OutDI->getNumArgs();
 
   unsigned E = InDI->getNumArgs() + OutDI->getNumArgs();
@@ -2481,7 +2519,7 @@ void PrinterCapstone::printInsnOpMapEntry(
     if (!Rec->getValue("RegTypes") && OperandType == "CS_OP_REG") {
       OpDataTypes =
           getOperandDataTypes(Rec->getValueAsDef("RegClass"), OperandType);
-    } else {
+    } else if (Rec->getValue("Type") || Rec->getValue("RegTypes")) {
       OpDataTypes = getOperandDataTypes(Rec, OperandType);
     }
 
@@ -2505,17 +2543,20 @@ void PrinterCapstone::printInsnOpMapEntry(
     }
   }
 
-  if (InsOps.size() > 7) {
+  if (InsOps.size() > 15) {
     for (OpData const &OD : InsOps) {
       PrintNote(OD.str());
       OD.Rec->dump();
     }
-    PrintFatalNote("Inst has more then 7 operands: " + Inst->AsmString);
+    PrintFatalNote("Inst has more then 15 operands: " + CGI->AsmString);
   }
+
+  std::string LLVMEnum = getLLVMInstEnumName(TargetName, CGI);
   // Write the C struct of the Instruction operands.
-  InsnOpMap << "{ /* " + TargetName + "_" + Inst->TheDef->getName() + " - " +
-                   TargetName + "_INS_" + MI->Mnemonic.upper() + " - " +
-                   Inst->AsmString + " */\n";
+  InsnOpMap << "{ /* " + LLVMEnum + " (" << InsnNum
+            << ") - " + TargetName + "_INS_" +
+                   (UseMI ? MI->Mnemonic.upper() : "INVALID") + " - " +
+                   CGI->AsmString + " */\n";
   InsnOpMap << "{\n";
   for (OpData const &OD : InsOps) {
     InsnOpMap.indent(2) << "{ " + OD.OpType + ", " + getCSAccess(OD.Access) +
@@ -2526,9 +2567,10 @@ void PrinterCapstone::printInsnOpMapEntry(
   InsnOpMap << "}},\n";
 }
 
-void PrinterCapstone::printInsnNameMapEnumEntry(
-    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &InsnNameMap, raw_string_ostream &InsnEnum) const {
+void printInsnNameMapEnumEntry(StringRef const &TargetName,
+                               std::unique_ptr<MatchableInfo> const &MI,
+                               raw_string_ostream &InsnNameMap,
+                               raw_string_ostream &InsnEnum) {
   static std::set<StringRef> MnemonicsSeen;
   StringRef Mnemonic = MI->Mnemonic;
   if (MnemonicsSeen.find(Mnemonic) != MnemonicsSeen.end())
@@ -2540,10 +2582,10 @@ void PrinterCapstone::printInsnNameMapEnumEntry(
   InsnEnum.indent(2) << EnumName + ",\n";
 }
 
-void PrinterCapstone::printFeatureEnumEntry(
-    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &FeatureEnum,
-    raw_string_ostream &FeatureNameArray) const {
+void printFeatureEnumEntry(StringRef const &TargetName,
+                           std::unique_ptr<MatchableInfo> const &MI,
+                           raw_string_ostream &FeatureEnum,
+                           raw_string_ostream &FeatureNameArray) {
   static std::set<std::string> Features;
   std::string EnumName;
 
@@ -2568,10 +2610,10 @@ void PrinterCapstone::printFeatureEnumEntry(
 
 /// Emits enum entries for each operand group.
 /// The operand group name is equal printer method of the operand.
-/// printSORegRegOperand -> SORegReg
-void PrinterCapstone::printOpPrintGroupEnum(
-    StringRef const &TargetName, std::unique_ptr<MatchableInfo> const &MI,
-    raw_string_ostream &OpGroupEnum) const {
+/// printSORegRegOperand -> SORegRegOperand
+void printOpPrintGroupEnum(StringRef const &TargetName,
+                           CodeGenInstruction const *CGI,
+                           raw_string_ostream &OpGroupEnum) {
   static const std::string Exceptions[] = {
       // ARM Operand groups which are used, but are not passed here.
       "RegImmShift", "LdStmModeOperand", "MandatoryInvertedPredicateOperand"};
@@ -2584,8 +2626,7 @@ void PrinterCapstone::printOpPrintGroupEnum(
     }
   }
 
-  CodeGenInstruction const *Inst = MI->getResultInst();
-  for (const CGIOperandList::OperandInfo &Op : Inst->Operands) {
+  for (const CGIOperandList::OperandInfo &Op : CGI->Operands) {
     std::string OpGroup = resolveTemplateCall(Op.PrinterMethodName).substr(5);
     if (OpGroups.find(OpGroup) != OpGroups.end())
       continue;
@@ -2595,16 +2636,7 @@ void PrinterCapstone::printOpPrintGroupEnum(
   }
 }
 
-void PrinterCapstone::writeFile(std::string Filename,
-                                std::string const &Str) const {
-  std::error_code EC;
-  ToolOutputFile InsnMapFile(Filename, EC, sys::fs::OF_Text);
-  if (EC)
-    PrintFatalNote("Could no write \"" + Filename + "\" Error:\n" +
-                   EC.message());
-  InsnMapFile.os() << Str;
-  InsnMapFile.keep();
-}
+} // namespace
 
 /// This function emits all the mapping files and
 /// Instruction enum for the current architecture.
@@ -2638,52 +2670,34 @@ void PrinterCapstone::asmMatcherEmitMatchTable(CodeGenTarget const &Target,
   Record *AsmVariant = Target.getAsmParserVariant(0);
   int AsmVariantNo = AsmVariant->getValueAsInt("Variant");
 
-  /// All our genertated tables and enums for CS mapping must have the same
-  /// order as the InstrInfo instruction enum. This class sorts them after it.
-  struct EnumSortComparator {
-    // CGI name to position in InstrInfo Instruction enum
-    std::map<const StringRef, int> InstMap;
-
-    EnumSortComparator(const CodeGenTarget &Target) {
-      ArrayRef<const CodeGenInstruction *> EnumOrdered =
-          Target.getInstructionsByEnumValue();
-      for (size_t I = 0; I < EnumOrdered.size(); ++I) {
-        const CodeGenInstruction *CGI = EnumOrdered[I];
-        InstMap[CGI->TheDef->getName()] = I;
-      }
-    }
-
-    bool operator()(const std::unique_ptr<MatchableInfo> &MI1,
-                    const std::unique_ptr<MatchableInfo> &MI2) const {
-      const CodeGenInstruction *CGI1 = MI1->getResultInst();
-      const CodeGenInstruction *CGI2 = MI2->getResultInst();
-      return InstMap.at(CGI1->TheDef->getName()) <
-             InstMap.at(CGI2->TheDef->getName());
-    }
-  };
-
-  // Sort the Mathables like the instructions for enums.
-  EnumSortComparator InstEnum(Target);
-  sort(Info.Matchables, InstEnum);
-
-  std::set<StringRef> InstSeen;
-  for (const auto &MI : Info.Matchables) {
-    if (MI->AsmVariantID != AsmVariantNo)
+  // Map AsmStrings to matchables.
+  // If Matchables have the same AsmString, the first is used.
+  std::map<std::string, const std::unique_ptr<MatchableInfo> *> MIMap;
+  const std::unique_ptr<MatchableInfo> *MI;
+  for (size_t I = 0; I < Info.Matchables.size(); ++I) {
+    MI = &Info.Matchables[I];
+    if (MI->get()->AsmVariantID != AsmVariantNo)
       continue;
-    printInsnNameMapEnumEntry(Target.getName(), MI, InsnNameMap, InsnEnum);
-    printFeatureEnumEntry(Target.getName(), MI, FeatureEnum, FeatureNameArray);
-    printOpPrintGroupEnum(Target.getName(), MI, OpGroups);
+    std::string AsmString = MI->get()->getResultInst()->AsmString;
+    MIMap.insert(make_pair(AsmString, MI));
+  }
 
-    if ((MI->TheDef->getName().find("anonymous") != std::string::npos) &&
-        MI->Mnemonic != "yield")
-      // Hint instructions have the Mnemonic yield.
-      continue;
-    if (find(InstSeen, MI->TheDef->getName()) != InstSeen.end())
-      continue;
-    InstSeen.emplace(MI->TheDef->getName());
-    printInsnMapEntry(Target.getName(), MI, InsnMap);
+  // The CS mapping tables, for instructions and their operands,
+  // need an entry for every CodeGenInstruction.
+  unsigned InsnNum = 0;
+  bool UseMI = false;
+  for (const CodeGenInstruction *CGI : Target.getInstructionsByEnumValue()) {
+    UseMI = MIMap.find(CGI->AsmString) != MIMap.end();
+    if (UseMI)
+      MI = MIMap[CGI->AsmString];
+    printInsnNameMapEnumEntry(Target.getName(), *MI, InsnNameMap, InsnEnum);
+    printFeatureEnumEntry(Target.getName(), *MI, FeatureEnum, FeatureNameArray);
+    printOpPrintGroupEnum(Target.getName(), CGI, OpGroups);
 
-    printInsnOpMapEntry(Target, MI, InsnOpMap);
+    printInsnOpMapEntry(Target, *MI, UseMI, CGI, InsnOpMap, InsnNum);
+    printInsnMapEntry(Target.getName(), *MI, UseMI, CGI, InsnMap, InsnNum);
+
+    ++InsnNum;
   }
 
   std::string TName = Target.getName().str();

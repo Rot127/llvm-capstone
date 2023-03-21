@@ -988,29 +988,6 @@ public:
   virtual void flushOS() const override { OS.flush(); }
 
   //--------------------------
-  // Mapping printing
-  //--------------------------
-
-  void writeFile(std::string Filename, std::string const &Str) const;
-  void printInsnMapEntry(StringRef const &TargetName,
-                         std::unique_ptr<MatchableInfo> const &MI,
-                         raw_string_ostream &InsnMap) const;
-  void printInsnOpMapEntry(CodeGenTarget const &Target,
-                           std::unique_ptr<MatchableInfo> const &MI,
-                           raw_string_ostream &InsnOpMap) const;
-  void printInsnNameMapEnumEntry(StringRef const &TargetName,
-                                 std::unique_ptr<MatchableInfo> const &MI,
-                                 raw_string_ostream &InsnNameMap,
-                                 raw_string_ostream &InsnEnum) const;
-  void printFeatureEnumEntry(StringRef const &TargetName,
-                             std::unique_ptr<MatchableInfo> const &MI,
-                             raw_string_ostream &FeatureEnum,
-                             raw_string_ostream &FeatureNameArray) const;
-  void printOpPrintGroupEnum(StringRef const &TargetName,
-                            std::unique_ptr<MatchableInfo> const &MI,
-                            raw_string_ostream &InsnMap) const;
-
-  //--------------------------
   // General printing methods
   //--------------------------
 
