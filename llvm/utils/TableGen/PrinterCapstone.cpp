@@ -2382,13 +2382,16 @@ static std::string getCSAccess(short Access) {
 
 std::string getCSOperandType(Record const *OpRec) {
   std::string OperandType;
-  if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
+  if (OpRec->isSubClassOf("PredicateOperand"))
+    return "CS_OP_PRED";
+  else if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
     OperandType = std::string(OpRec->getValueAsString("OperandType"));
   else if (OpRec->isSubClassOf("RegisterClass") ||
            OpRec->isSubClassOf("PointerLikeRegClass"))
     OperandType = "OPERAND_REGISTER";
   else
     return "CS_OP_INVALID";
+
   if (OperandType == "OPERAND_UNKNOWN") {
     if (OpRec->getValueAsDef("Type")->getValueAsInt("Size") == 0)
       // Pseudo type
