@@ -2380,11 +2380,12 @@ static std::string getCSAccess(short Access) {
     PrintFatalNote("Invalid access flags set.");
 }
 
-std::string getCSOperandType(Record const *OpRec) {
+std::string getPrimaryCSOperandType(Record const *OpRec) {
   std::string OperandType;
   if (OpRec->isSubClassOf("PredicateOperand"))
     return "CS_OP_PRED";
-  else if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
+  else if (OpRec->isSubClassOf("Operand") ||
+           OpRec->isSubClassOf("RegisterOperand"))
     OperandType = std::string(OpRec->getValueAsString("OperandType"));
   else if (OpRec->isSubClassOf("RegisterClass") ||
            OpRec->isSubClassOf("PointerLikeRegClass"))
@@ -2412,21 +2413,36 @@ std::string getCSOperandType(Record const *OpRec) {
   return OperandType;
 }
 
-std::string getSecondaryOperandType(Record *Op) {
+std::string getSecondaryOperandType(Record const *Op) {
   DagInit *DAGOpInfo = Op->getValueAsDag("MIOperandInfo");
   std::string SecondaryOperandType;
   if (DAGOpInfo->getNumArgs() != 0) {
     Record *InstOpRec = cast<DefInit>(DAGOpInfo->getArg(0))->getDef();
-    SecondaryOperandType = getCSOperandType(InstOpRec);
+    SecondaryOperandType = getPrimaryCSOperandType(InstOpRec);
   }
   if (!SecondaryOperandType.empty())
     return " | " + SecondaryOperandType;
   return " | CS_OP_IMM";
 }
 
+std::string getCSOperandType(Record const *OpRec) {
+  std::string OperandType = getPrimaryCSOperandType(OpRec);
+  if (OperandType == "CS_OP_MEM") {
+    OperandType += getSecondaryOperandType(OpRec);
+  }
+  return OperandType;
+}
+
 std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
   MVT::SimpleValueType VT;
   std::vector<Record *> OpDataTypes;
+
+  if (!Op->getValue("RegTypes") && OperandType == "CS_OP_REG")
+    Op = Op->getValueAsDef("RegClass");
+
+  if (!(Op->getValue("Type") || Op->getValue("RegTypes")))
+    return "{ CS_DATA_TYPE_LAST }";
+
   if (OperandType == "CS_OP_REG") {
     OpDataTypes = Op->getValueAsListOfDefs("RegTypes");
   } else {
@@ -2454,22 +2470,37 @@ std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
   return DataTypes;
 }
 
+typedef struct OpData {
+  Record *Rec;
+  std::string OpAsm;
+  std::string OpType;
+  std::string DataTypes;
+  unsigned Access; ///< 0b00 = unkown, 0b01 = In, 0b10 = Out, 0b11 = In and Out
+  std::string str() const {
+    return "Asm: " + OpAsm + " Type: " + OpType +
+           " Access: " + std::to_string(Access);
+  }
+} OpData;
+
+bool doesOpExist(StringRef ArgName, bool IsOutOp, std::vector<OpData> InsOps) {
+  bool OpExists = false;
+  for (OpData &OD : InsOps) {
+    if (OD.OpAsm == ArgName ||
+        // ARM way of marking registers which are IN and OUT
+        OD.OpAsm == (ArgName.str() + "_src") ||
+        OD.OpAsm + "_src" == ArgName.str()) {
+      OpExists = true;
+      OD.Access |= IsOutOp ? 2 : 1;
+      break;
+    }
+  }
+  return OpExists;
+}
+
 void printInsnOpMapEntry(CodeGenTarget const &Target,
                          std::unique_ptr<MatchableInfo> const &MI, bool UseMI,
                          CodeGenInstruction const *CGI,
                          raw_string_ostream &InsnOpMap, unsigned InsnNum) {
-  typedef struct OpData {
-    Record *Rec;
-    std::string OpAsm;
-    std::string OpType;
-    std::string DataTypes;
-    unsigned
-        Access; ///< 0b00 = unkown, 0b01 = In, 0b10 = Out, 0b11 = In and Out
-    std::string str() const {
-      return "Asm: " + OpAsm + " Type: " + OpType +
-             " Access: " + std::to_string(Access);
-    }
-  } OpData;
   StringRef TargetName = Target.getName();
 
   // Instruction without mnemonic.
@@ -2514,32 +2545,12 @@ void printInsnOpMapEntry(CodeGenTarget const &Target,
     std::string OperandType = getCSOperandType(Rec);
     if (OperandType == "")
       continue;
-    if (OperandType == "CS_OP_MEM") {
-      OperandType += getSecondaryOperandType(Rec);
-    }
 
-    std::string OpDataTypes;
-    if (!Rec->getValue("RegTypes") && OperandType == "CS_OP_REG") {
-      OpDataTypes =
-          getOperandDataTypes(Rec->getValueAsDef("RegClass"), OperandType);
-    } else if (Rec->getValue("Type") || Rec->getValue("RegTypes")) {
-      OpDataTypes = getOperandDataTypes(Rec, OperandType);
-    }
+    std::string OpDataTypes = getOperandDataTypes(Rec, OperandType);
 
     // Check if Operand was already seen before (as In or Out operand).
     // If so update its access flags.
-    bool OpExists = false;
-    for (OpData &OD : InsOps) {
-      if (OD.OpAsm == ArgName ||
-          // ARM way of marking registers which are IN and OUT
-          OD.OpAsm == (ArgName.str() + "_src") ||
-          OD.OpAsm + "_src" == ArgName.str()) {
-        OpExists = true;
-        OD.Access |= IsOutOp ? 2 : 1;
-        break;
-      }
-    }
-    if (!OpExists) {
+    if (!doesOpExist(ArgName, IsOutOp, InsOps)) {
       unsigned Flag = IsOutOp ? 2 : 1;
       OpData OD = {Rec, ArgName.str(), OperandType, OpDataTypes, Flag};
       InsOps.emplace_back(OD);
