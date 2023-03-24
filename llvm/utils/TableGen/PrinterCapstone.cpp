@@ -2384,8 +2384,8 @@ std::string getPrimaryCSOperandType(Record const *OpRec) {
   std::string OperandType;
   if (OpRec->isSubClassOf("PredicateOperand"))
     return "CS_OP_PRED";
-  else if (OpRec->isSubClassOf("Operand") ||
-           OpRec->isSubClassOf("RegisterOperand"))
+
+  if (OpRec->isSubClassOf("Operand") || OpRec->isSubClassOf("RegisterOperand"))
     OperandType = std::string(OpRec->getValueAsString("OperandType"));
   else if (OpRec->isSubClassOf("RegisterClass") ||
            OpRec->isSubClassOf("PointerLikeRegClass"))
@@ -2413,27 +2413,14 @@ std::string getPrimaryCSOperandType(Record const *OpRec) {
   return OperandType;
 }
 
-std::string getSecondaryOperandType(Record const *Op) {
-  DagInit *DAGOpInfo = Op->getValueAsDag("MIOperandInfo");
-  std::string SecondaryOperandType;
-  if (DAGOpInfo->getNumArgs() != 0) {
-    Record *InstOpRec = cast<DefInit>(DAGOpInfo->getArg(0))->getDef();
-    SecondaryOperandType = getPrimaryCSOperandType(InstOpRec);
-  }
-  if (!SecondaryOperandType.empty())
-    return " | " + SecondaryOperandType;
-  return " | CS_OP_IMM";
-}
-
 std::string getCSOperandType(Record const *OpRec) {
   std::string OperandType = getPrimaryCSOperandType(OpRec);
-  if (OperandType == "CS_OP_MEM") {
-    OperandType += getSecondaryOperandType(OpRec);
-  }
+  if (OperandType == "CS_OP_MEM")
+    OperandType += " | CS_OP_IMM";
   return OperandType;
 }
 
-std::string getOperandDataTypes(Record *Op, std::string &OperandType) {
+std::string getOperandDataTypes(Record const *Op, std::string &OperandType) {
   MVT::SimpleValueType VT;
   std::vector<Record *> OpDataTypes;
 
@@ -2482,19 +2469,59 @@ typedef struct OpData {
   }
 } OpData;
 
-bool doesOpExist(StringRef ArgName, bool IsOutOp, std::vector<OpData> InsOps) {
+bool doesOpExist(OpData &Op, bool IsOutOp, std::vector<OpData> InsOps) {
   bool OpExists = false;
   for (OpData &OD : InsOps) {
-    if (OD.OpAsm == ArgName ||
-        // ARM way of marking registers which are IN and OUT
-        OD.OpAsm == (ArgName.str() + "_src") ||
-        OD.OpAsm + "_src" == ArgName.str()) {
+    if ((OD.OpAsm == Op.OpAsm ||
+         // ARM way of marking registers which are IN and OUT
+         OD.OpAsm == (Op.OpAsm + "_src") || OD.OpAsm + "_src" == Op.OpAsm) &&
+        OD.DataTypes == Op.DataTypes && OD.OpType == Op.OpType) {
       OpExists = true;
+      // Update the access flag of existing operand.
+      // Since the duplicate operand can be the in and out version of the same
+      // operand.
       OD.Access |= IsOutOp ? 2 : 1;
       break;
     }
   }
   return OpExists;
+}
+
+Record *argInitOpToRecord(Init *ArgInit) {
+  DagInit *SubArgDag = dyn_cast<DagInit>(ArgInit);
+  if (SubArgDag)
+    ArgInit = SubArgDag->getOperator();
+  DefInit *Arg = dyn_cast<DefInit>(ArgInit);
+  Record *Rec = Arg->getDef();
+  return Rec;
+}
+
+void addComplexOperand(Record const *ComplexOp, StringRef const &ArgName,
+                       bool IsOutOp, std::vector<OpData> &InsOps) {
+  DagInit *SubOps = ComplexOp->getValueAsDag("MIOperandInfo");
+
+  unsigned E = SubOps->getNumArgs();
+  for (unsigned I = 0; I != E; ++I) {
+    Init *ArgInit = SubOps->getArg(I);
+    Record *Rec = argInitOpToRecord(ArgInit);
+
+    // Determine Operand type
+    std::string OperandType = getPrimaryCSOperandType(ComplexOp);
+    if (OperandType == "CS_OP_MEM") {
+      OperandType += " | " + getPrimaryCSOperandType(Rec);
+    }
+
+    std::string OpDataTypes = getOperandDataTypes(ComplexOp, OperandType);
+
+    // Check if Operand was already seen before (as In or Out operand).
+    // If so update its access flags.
+    std::string OpName = ComplexOp->getName().str() + " - " + ArgName.str();
+    unsigned Flag = IsOutOp ? 2 : 1;
+    OpData NewOp = {Rec, OpName, OperandType, OpDataTypes, Flag};
+    if (!doesOpExist(NewOp, IsOutOp, InsOps)) {
+      InsOps.emplace_back(NewOp);
+    }
+  }
 }
 
 void printInsnOpMapEntry(CodeGenTarget const &Target,
@@ -2535,11 +2562,16 @@ void printInsnOpMapEntry(CodeGenTarget const &Target,
       ArgInit = InDI->getArg(I - NumDefs);
       ArgName = InDI->getArgNameStr(I - NumDefs);
     }
-    DagInit *SubArgDag = dyn_cast<DagInit>(ArgInit);
-    if (SubArgDag)
-      ArgInit = SubArgDag->getOperator();
-    DefInit *Arg = dyn_cast<DefInit>(ArgInit);
-    Record *Rec = Arg->getDef();
+    Record *Rec = argInitOpToRecord(ArgInit);
+
+    // Add complex operands.
+    // Operands which effectifly consists of two or more operands.
+    if (Rec->getValue("MIOperandInfo")) {
+      if (Rec->getValueAsDag("MIOperandInfo")->getNumArgs() > 0) {
+        addComplexOperand(Rec, ArgName, IsOutOp, InsOps);
+        continue;
+      }
+    }
 
     // Determine Operand type
     std::string OperandType = getCSOperandType(Rec);
@@ -2550,10 +2582,10 @@ void printInsnOpMapEntry(CodeGenTarget const &Target,
 
     // Check if Operand was already seen before (as In or Out operand).
     // If so update its access flags.
-    if (!doesOpExist(ArgName, IsOutOp, InsOps)) {
-      unsigned Flag = IsOutOp ? 2 : 1;
-      OpData OD = {Rec, ArgName.str(), OperandType, OpDataTypes, Flag};
-      InsOps.emplace_back(OD);
+    unsigned Flag = IsOutOp ? 2 : 1;
+    OpData NewOp = {Rec, ArgName.str(), OperandType, OpDataTypes, Flag};
+    if (!doesOpExist(NewOp, IsOutOp, InsOps)) {
+      InsOps.emplace_back(NewOp);
     }
   }
 
