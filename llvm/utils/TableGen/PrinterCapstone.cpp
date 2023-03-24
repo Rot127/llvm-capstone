@@ -2515,7 +2515,7 @@ void addComplexOperand(Record const *ComplexOp, StringRef const &ArgName,
 
     // Check if Operand was already seen before (as In or Out operand).
     // If so update its access flags.
-    std::string OpName = ComplexOp->getName().str() + " - " + ArgName.str();
+    std::string OpName = ArgName.str() + " - " + Rec->getName().str();
     unsigned Flag = IsOutOp ? 2 : 1;
     OpData NewOp = {Rec, OpName, OperandType, OpDataTypes, Flag};
     if (!doesOpExist(NewOp, IsOutOp, InsOps)) {
