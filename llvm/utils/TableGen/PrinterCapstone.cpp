@@ -2044,7 +2044,7 @@ void PrinterCapstone::instrInfoSetOperandInfoStr(
   assert(!Op.OperandType.empty() && "Invalid operand type.");
   std::string OpTypeCpy = Op.OperandType;
   if (OpTypeCpy.find("VPRED") != std::string::npos)
-    OpTypeCpy = Regex("OPERAND").sub(OpTypeCpy, "OP");
+    OpTypeCpy = Regex("OPERAND").sub("OP", OpTypeCpy);
   Res += OpTypeCpy.replace(OpTypeCpy.find("::"), 2, "_");
 
   // Fill in constraint info.
