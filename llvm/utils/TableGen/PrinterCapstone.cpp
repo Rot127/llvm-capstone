@@ -2106,7 +2106,7 @@ void PrinterCapstone::instrInfoEmitOperandInfo(
 
 void PrinterCapstone::instrInfoEmitRecordEnd(
     unsigned InstNum, std::string const &InstName) const {
-  OS << " },\n";
+  OS << " },  // Inst #" << InstNum << " = " << InstName << "\n";
 }
 
 void PrinterCapstone::instrInfoEmitStringLiteralDef(
