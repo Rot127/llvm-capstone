@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "Printer.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/FileSystem.h"
@@ -165,7 +167,8 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
          "Register enum value mismatch!");
   OS << "  NUM_TARGET_REGS // " << Registers.size() + 1 << "\n";
   OS << "};\n";
-  CSRegEnum << "\tARM_REG_ENDING, // " << Registers.size() + 1 << "\n";
+  CSRegEnum << "\t" << TargetName << "_REG_ENDING, // " << Registers.size() + 1 << "\n";
+
   writeFile(TargetName + "GenCSRegEnum.inc", CSRegEnumStr);
 
   const auto &RegisterClasses = Bank.getRegClasses();
@@ -2313,11 +2316,22 @@ std::string getImplicitDefs(StringRef const &TargetName,
   return Flags;
 }
 
+static inline std::string
+getNormalMnemonic(std::unique_ptr<MatchableInfo> const &MI, const bool upper = true) {
+  auto Mn = MI->Mnemonic.str();
+  std::replace(Mn.begin(), Mn.end(), '.', '_');
+  if (upper) {
+    std::transform(Mn.begin(), Mn.end(), Mn.begin(),
+                   ::toupper);
+  }
+  return Mn;
+}
+
 std::string getReqFeatures(StringRef const &TargetName,
                            std::unique_ptr<MatchableInfo> const &MI, bool UseMI,
                            CodeGenInstruction const *CGI) {
   std::string Flags = "{ ";
-  std::string Mn = MI->Mnemonic.upper();
+  std::string Mn = getNormalMnemonic(MI);
   // The debug if
   if (CGI->isBranch && !CGI->isCall) {
     Flags += TargetName.str() + "_GRP_JUMP, ";
@@ -2358,7 +2372,7 @@ void printInsnMapEntry(StringRef const &TargetName,
   InsnMap.indent(2) << getLLVMInstEnumName(TargetName, CGI) << " /* " << InsnNum
                     << " */";
   InsnMap << ", " << TargetName << "_INS_"
-          << (UseMI ? MI->Mnemonic.upper() : "INVALID") << ",\n";
+          << (UseMI ? getNormalMnemonic(MI) : "INVALID") << ",\n";
   InsnMap.indent(2) << "#ifndef CAPSTONE_DIET\n";
   if (UseMI) {
     InsnMap.indent(4) << getImplicitUses(TargetName, CGI) << ", ";
@@ -2540,7 +2554,7 @@ void printInsnOpMapEntry(CodeGenTarget const &Target,
     // Write the C struct of the Instruction operands.
     InsnOpMap << "{ /* " + LLVMEnum + " (" << InsnNum
               << ") - " + TargetName + "_INS_" +
-                     (UseMI ? MI->Mnemonic.upper() : "INVALID") + " - " +
+                     (UseMI ? getNormalMnemonic(MI) : "INVALID") + " - " +
                      CGI->AsmString + " */\n";
     InsnOpMap << " 0 \n";
     InsnOpMap << "},\n";
@@ -2605,7 +2619,7 @@ void printInsnOpMapEntry(CodeGenTarget const &Target,
   // Write the C struct of the Instruction operands.
   InsnOpMap << "{ /* " + LLVMEnum + " (" << InsnNum
             << ") - " + TargetName + "_INS_" +
-                   (UseMI ? MI->Mnemonic.upper() : "INVALID") + " - " +
+                   (UseMI ? getNormalMnemonic(MI) : "INVALID") + " - " +
                    CGI->AsmString + " */\n";
   InsnOpMap << "{\n";
   for (OpData const &OD : InsOps) {
@@ -2621,13 +2635,16 @@ void printInsnNameMapEnumEntry(StringRef const &TargetName,
                                std::unique_ptr<MatchableInfo> const &MI,
                                raw_string_ostream &InsnNameMap,
                                raw_string_ostream &InsnEnum) {
-  static std::set<StringRef> MnemonicsSeen;
-  StringRef Mnemonic = MI->Mnemonic;
+  static std::set<std::string> MnemonicsSeen;
+  auto Mnemonic = getNormalMnemonic(MI, false);
   if (MnemonicsSeen.find(Mnemonic) != MnemonicsSeen.end())
     return;
   MnemonicsSeen.emplace(Mnemonic);
 
-  std::string EnumName = TargetName.str() + "_INS_" + Mnemonic.upper();
+  std::string Mn{mapped_iterator(Mnemonic.begin(), toUpper),
+                 mapped_iterator(Mnemonic.end(), toUpper)};
+
+  std::string EnumName = TargetName.str() + "_INS_" + Mn;
   InsnNameMap.indent(2) << "\"" + Mnemonic + "\", // " + EnumName + "\n";
   InsnEnum.indent(2) << EnumName + ",\n";
 }

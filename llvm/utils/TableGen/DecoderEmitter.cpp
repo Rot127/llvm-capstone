@@ -2064,8 +2064,18 @@ static void setPrinterParameters(CodeGenTarget &Target, PrinterLanguage PL,
   } else {
     PredicateNamespace = Target.getName().str();
     GPrefix = "if (";
-    GPostfix = " == MCDisassembler::Fail)";
     L = "";
+
+    switch (PL) {
+    default:
+      PrintFatalNote("DecoderEmitter does not support the given output language.");
+    case llvm::PRINTER_LANG_CPP:
+      GPostfix = " == MCDisassembler::Fail)";
+      break;
+    case llvm::PRINTER_LANG_CAPSTONE_C:
+      GPostfix = " == MCDisassembler_Fail)";
+      break;
+    }
   }
 
   ROK = "S";
