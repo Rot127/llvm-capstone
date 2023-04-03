@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "Printer.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/FileSystem.h"
@@ -2315,7 +2317,7 @@ getNormalMnemonic(std::unique_ptr<MatchableInfo> const &MI, const bool upper = t
   std::replace(Mn.begin(), Mn.end(), '.', '_');
   if (upper) {
     std::transform(Mn.begin(), Mn.end(), Mn.begin(),
-                          ::toupper);
+                   ::toupper);
   }
   return Mn;
 }
@@ -2628,14 +2630,16 @@ void printInsnNameMapEnumEntry(StringRef const &TargetName,
                                std::unique_ptr<MatchableInfo> const &MI,
                                raw_string_ostream &InsnNameMap,
                                raw_string_ostream &InsnEnum) {
-  static std::set<StringRef> MnemonicsSeen;
-  auto Mn = getNormalMnemonic(MI, false);
-  StringRef Mnemonic = Mn;
+  static std::set<std::string> MnemonicsSeen;
+  auto Mnemonic = getNormalMnemonic(MI, false);
   if (MnemonicsSeen.find(Mnemonic) != MnemonicsSeen.end())
     return;
   MnemonicsSeen.emplace(Mnemonic);
 
-  std::string EnumName = TargetName.str() + "_INS_" + Mnemonic.upper();
+  std::string Mn{mapped_iterator(Mnemonic.begin(), toUpper),
+                 mapped_iterator(Mnemonic.end(), toUpper)};
+
+  std::string EnumName = TargetName.str() + "_INS_" + Mn;
   InsnNameMap.indent(2) << "\"" + Mnemonic + "\", // " + EnumName + "\n";
   InsnEnum.indent(2) << EnumName + ",\n";
 }
