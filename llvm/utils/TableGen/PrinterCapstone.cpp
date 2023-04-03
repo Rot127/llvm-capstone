@@ -167,7 +167,8 @@ void PrinterCapstone::regInfoEmitEnums(CodeGenTarget const &Target,
          "Register enum value mismatch!");
   OS << "  NUM_TARGET_REGS // " << Registers.size() + 1 << "\n";
   OS << "};\n";
-  CSRegEnum << "\tARM_REG_ENDING, // " << Registers.size() + 1 << "\n";
+  CSRegEnum << "\t" << TargetName << "_REG_ENDING, // " << Registers.size() + 1 << "\n";
+
   writeFile(TargetName + "GenCSRegEnum.inc", CSRegEnumStr);
 
   const auto &RegisterClasses = Bank.getRegClasses();
