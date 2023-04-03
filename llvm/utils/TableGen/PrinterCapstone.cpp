@@ -2056,7 +2056,11 @@ void PrinterCapstone::instrInfoSetOperandInfoStr(
     Res += "MCOI_EARLY_CLOBBER";
   else {
     assert(Constraint.isTied());
-    Res += "MCOI_TIED_TO";
+    // This comment of the Tied to operand is not neclectable!
+    // The string generated in this function is used as key in a map.
+    // If the TIED_TO number is missing, two originally different
+    // strings would look the same from here on.
+    Res += "MCOI_TIED_TO /* = " + utostr(Constraint.getTiedOperand()) + " */";
   }
 }
 
