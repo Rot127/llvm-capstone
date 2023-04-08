@@ -650,7 +650,7 @@ void PrinterCapstone::decoderEmitterEmitOpBinaryParser(
   bool const UseInsertBits = OpInfo.numFields() != 1 || OpInfo.InitValue != 0;
 
   if (UseInsertBits) {
-    DecOS.indent(Indent) << "tmp = ";
+    DecOS.indent(Indent) << "tmp = 0x";
     DecOS.write_hex(OpInfo.InitValue);
     DecOS << "; \\\n";
   }
