@@ -615,13 +615,19 @@ static std::string resolveTemplateCall(std::string const &Dec) {
   unsigned long const B = Dec.find_first_of("<");
   unsigned long const E = Dec.find(">");
   if (B == std::string::npos) {
+    // No template
     return Dec;
   }
   std::string const &DecName = Dec.substr(0, B);
   std::string Args = Dec.substr(B + 1, E - B - 1);
-  Args = Regex("true").sub(Args, "1");
-  Args = Regex("false").sub(Args, "0");
-  std::string Decoder = DecName + "_" + Regex("\\s*,\\s*").sub(Args, "_");
+  while ((Args.find("true") != std::string::npos) ||
+         (Args.find("false") != std::string::npos) ||
+         (Args.find(",") != std::string::npos)) {
+    Args = Regex("true").sub("1", Args);
+    Args = Regex("false").sub("0", Args);
+    Args = Regex(" *, *").sub("_", Args);
+  }
+  std::string Decoder = DecName + "_" + Args;
   return Decoder;
 }
 
