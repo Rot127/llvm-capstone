@@ -2323,15 +2323,17 @@ std::string getImplicitDefs(StringRef const &TargetName,
   return Flags;
 }
 
+static inline std::string normalizedMnemonic(StringRef const &Mn,
+                                             const bool Upper = true) {
+  auto Mnemonic = Upper ? Mn.upper() : Mn.str();
+  std::replace(Mnemonic.begin(), Mnemonic.end(), '.', '_');
+  return Mnemonic;
+}
+
 static inline std::string
 getNormalMnemonic(std::unique_ptr<MatchableInfo> const &MI,
-                  const bool upper = true) {
-  auto Mn = MI->Mnemonic.str();
-  std::replace(Mn.begin(), Mn.end(), '.', '_');
-  if (upper) {
-    std::transform(Mn.begin(), Mn.end(), Mn.begin(), ::toupper);
-  }
-  return Mn;
+                  const bool Upper = true) {
+  return normalizedMnemonic(MI->Mnemonic);
 }
 
 std::string getReqFeatures(StringRef const &TargetName,
@@ -2642,19 +2644,17 @@ void printInsnNameMapEnumEntry(StringRef const &TargetName,
                                std::unique_ptr<MatchableInfo> const &MI,
                                raw_string_ostream &InsnNameMap,
                                raw_string_ostream &InsnEnum) {
-  static std::set<std::string> MnemonicsSeen;
-  auto mnemonic = MI->Mnemonic.str();
-  if (MnemonicsSeen.find(mnemonic) != MnemonicsSeen.end())
+  static std::set<StringRef> MnemonicsSeen;
+  StringRef Mnemonic = MI->Mnemonic;
+  if (MnemonicsSeen.find(Mnemonic) != MnemonicsSeen.end())
     return;
-  MnemonicsSeen.emplace(mnemonic);
 
-  std::string Mn{mapped_iterator(mnemonic.begin(), toUpper),
-                 mapped_iterator(mnemonic.end(), toUpper)};
-  std::replace(Mn.begin(), Mn.end(), '.', '_');
-
-  std::string EnumName = TargetName.str() + "_INS_" + Mn;
-  InsnNameMap.indent(2) << "\"" + mnemonic + "\", // " + EnumName + "\n";
+  std::string EnumName =
+      TargetName.str() + "_INS_" + normalizedMnemonic(Mnemonic);
+  InsnNameMap.indent(2) << "\"" + Mnemonic + "\", // " + EnumName + "\n";
   InsnEnum.indent(2) << EnumName + ",\n";
+
+  MnemonicsSeen.emplace(Mnemonic);
 }
 
 void printFeatureEnumEntry(StringRef const &TargetName,
